@@ -1,0 +1,11 @@
+/data/AnimeRun_v2/*
+/data/*
+/runs/*
+/models/RAFT/*
+/outputs_infer/*
+**/__pycache__/*
+*.pyc
+*.pyo
+*.pyd
+*.sqlite3
+/outputs/*

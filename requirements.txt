@@ -1,0 +1,12 @@
+torch>=2.1
+torchvision>=0.16
+opencv-python
+numpy
+pillow
+tqdm
+yamlargparse>=1.31
+matplotlib
+scipy
+tensorboard
+einops==0.8.1
+tensorboardX==2.6.4

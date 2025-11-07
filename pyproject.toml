@@ -1,0 +1,8 @@
+[project]
+name = "optical-flow-baseline"
+version = "0.1.0"
+dependencies = []
+
+
+[tool.setuptools]
+packages = ["dataio", "models", "losses", "metrics", "utils", "engine"]

@@ -1,0 +1,66 @@
+# file: configs/unsup_animotionflow.yaml
+# Unsupervised / Semi-supervised config for anime optical flow
+seed: 1337
+workspace: outputs/animotionflow_unsup
+
+
+# Data
+data:
+  name: animerun
+  train_root: data/AnimeRun_v2/ # directory of sequences (each subdir = video)
+  val_root: data/AnimeRun_v2/
+  img_exts: [".png", ".jpg", ".jpeg"]
+  stride_min: 1
+  stride_max: 2
+  crop_size: [368, 768] # (H, W) RAFT-friendly
+  resize: null # keep original, crop only
+  batch_size: 6
+  num_workers: 0
+  color_jitter: [0.3, 0.3, 0.3, 0.1] # brightness, contrast, saturation, hue
+  do_flip: true
+  grayscale_p: 0.1
+
+
+# Model
+model:
+  name: raft # expects a RAFT implementation in models/raft.py
+  ckpt: null # optional init ckpt
+  iters: 24 # RAFT unrolled iterations during training
+
+
+# Optim
+optim:
+  lr: 1.0e-4
+  weight_decay: 1.0e-5
+  epochs: 60
+  clip: 1.0
+  scheduler:
+    type: cosine
+    min_lr: 1.0e-6
+
+
+# Loss weights
+loss:
+  w_photo: 1.0
+  w_ssim: 0.15
+  w_smooth1: 0.2
+  w_smooth2: 0.05
+  w_fb: 0.2
+  w_epe_sup: 1.0 # used only when sample has 'flow'
+  charbonnier_eps: 1.0e-3
+  fb_alpha: 0.01 # |f12 + warp(f21)| < alpha*(|f12|+|warp(f21)|) + beta
+  fb_beta: 0.5
+
+
+# Checkpointing
+ckpt:
+  save_every: 1 # epochs
+  keep_last: 5
+
+logging:
+  use_tb: true                 # enable TensorBoard
+  tb_dir: tb                   # subfolder inside workspace
+viz:
+  enable: true
+  max_samples: 8               # how many pairs to visualize per epoch
+  save_dir: val_vis            # under workspace

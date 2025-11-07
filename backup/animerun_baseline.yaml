@@ -1,0 +1,50 @@
+seed: 42
+work_dir: ./runs/animerun_v2_baseline_2
+
+
+trainer:
+  gpus: 1
+  epochs: 150
+  precision: fp32
+  batch_size: 8
+  num_workers: 8
+  log_every: 50
+  val_every: 1000
+  save_every: 2000
+
+
+opt:
+  lr: 2.0e-4
+  weight_decay: 0.0
+  scheduler: cosine
+  warmup_steps: 2000
+  grad_clip: 1.0
+
+
+dataset:
+  name: animerun
+  root: ./data/AnimeRun_v2
+  train_csv: data/animerun_v2_train.csv
+  val_csv: data/animerun_v2_val.csv
+  img_suffix: .png
+  flow_suffix: .flo
+  resize: [368, 640]
+
+aug:
+  enable: true
+  color_jitter: true
+  flip: true
+  scale: [0.9, 1.1]
+
+
+model:
+  name: baseline_fnet
+  hidden_dim: 128
+  pyramid_levels: 2
+  corr_radius: 4
+
+
+loss:
+  type: charbonnier
+  eps: 1.0e-3
+  multi_scale_weights: [0.5, 1.0]
