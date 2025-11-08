@@ -2,6 +2,7 @@
 # Unsupervised / Semi-supervised config for anime optical flow
 seed: 1337
 workspace: outputs/animotionflow_unsup
+"debug": { "detect_anomaly": true }
 
 
 # Data

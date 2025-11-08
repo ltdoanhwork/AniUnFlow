@@ -16,6 +16,7 @@ from losses.unsup_flow_losses import UnsupervisedFlowLoss
 from utils.utils import InputPadder
 from tqdm import tqdm
 
+torch.autograd.set_detect_anomaly(True)
 
 # ------------------------------ utils ------------------------------ #
 def concat_mean(chunks) -> float:
@@ -295,6 +296,7 @@ class UnsupervisedFlowTrainer:
             dt = time.time() - t0
             lr = self.opt.param_groups[0]["lr"]
             tr_loss = tr["loss"] / max(1, tr["steps"])
+            print(tr_loss)
             print(
                 f"[Epoch {ep:03d}/{epochs}] "
                 f"train_loss={tr_loss:.4f} "
@@ -449,6 +451,7 @@ class UnsupervisedFlowTrainer:
                         )
                 except Exception:
                     pass
+            break
 
         # ========================== aggregate ==========================
         metrics: Dict[str, float] = {}
@@ -501,22 +504,28 @@ class UnsupervisedFlowTrainer:
             batch = _to_device(batch, self.device)
             i1 = _pick(batch, "image1", "img1")
             i2 = _pick(batch, "image2", "img2")
+            if not torch.isfinite(i1).all() or not torch.isfinite(i2).all():
+                print(f"[NaN in input] batch {ib}")
+                print("i1:", i1.min().item(), i1.max().item(), torch.isfinite(i1).all().item())
+                print("i2:", i2.min().item(), i2.max().item(), torch.isfinite(i2).all().item())
+                break
 
             # Ensure floating 0..1 if input came as uint8
             if i1.dtype == torch.uint8:
                 i1 = i1.float() / 255.0
             if i2.dtype == torch.uint8:
                 i2 = i2.float() / 255.0
-
-            with torch.cuda.amp.autocast(enabled=torch.cuda.is_available()):
+            
+            # with torch.cuda.amp.autocast(enabled=torch.cuda.is_available()):
+            with torch.cuda.amp.autocast(enabled=False):
                 preds = self._forward(i1, i2)
                 loss_unsup, _ = self._loss_on_preds(preds, batch)
+                print(loss_unsup)
                 if "flow" in batch:
                     epe_b = _masked_epe(preds[-1], batch["flow"], batch.get("valid"))
                     loss = loss_unsup + self.w_epe_sup * epe_b.mean()
                 else:
                     loss = loss_unsup
-
             # Scale loss if accumulating
             loss_to_backprop = loss / self.accum_steps
             self.scaler.scale(loss_to_backprop).backward()
@@ -543,5 +552,5 @@ class UnsupervisedFlowTrainer:
                 self.writer.add_scalar("train/loss_step", float(loss.detach().item()), self.global_step)
                 lr_now = self.opt.param_groups[0]["lr"]
                 self.writer.add_scalar("train/lr_step", lr_now, self.global_step)
-
+            
         return accum

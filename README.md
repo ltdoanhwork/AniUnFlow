@@ -46,3 +46,23 @@ We assume flow files are one of: `.flo`, `.pfm`, `.npy`, or KITTI-encoded `.png`
 
 ## Notes
 - This baseline model is intentionally small to validate the pipeline. Swap for a stronger model once the data/IO path is stable.
+
+```
+models/
+├── __init__.py
+├── aniflowformer_t/
+│ ├── __init__.py
+│ ├── model.py # High-level model wrapper (AniFlowFormerT)
+│ ├── encoder.py # PyramidEncoder + blocks
+│ ├── tokenizer.py # CostTokenizer (local correlation → tokens)
+│ ├── lcm.py # LatentCostMemory (temporal Transformer)
+│ ├── gtr.py # GlobalTemporalRegressor (temporal aggregator)
+│ ├── decoder.py # Multi-Scale Recurrent Decoder (coarse→fine)
+│ ├── occlusion.py # Optional occlusion head
+│ ├── sam_adapter.py # Optional SAM guidance adapter
+│ ├── losses.py # Photometric, smoothness, temporal, cycle
+│ └── utils.py # warp, SSIM, image gradients, grids
+```
+
+
+---
