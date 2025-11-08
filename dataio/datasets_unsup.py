@@ -41,7 +41,7 @@ class UnlabeledPairDataset(Dataset):
         self.is_test = is_test
 
         # resize options
-        self.resize_enable = resizex
+        self.resize_enable = resize
         self.keep_aspect = keep_aspect
         assert pad_mode in ("reflect", "constant")
         self.pad_mode = pad_mode

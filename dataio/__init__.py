@@ -1,3 +1,4 @@
 from .animerun import Animerun
 from .datasets_unsup import UnlabeledPairDataset
-__all__ = ["Animerun", "UnlabeledPairDataset"]
+from .clip_dataset_unsup import UnlabeledClipDataset
+__all__ = ["Animerun", "UnlabeledPairDataset", "UnlabeledClipDataset"]
