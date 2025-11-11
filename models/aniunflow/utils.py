@@ -5,20 +5,42 @@ from einops import rearrange
 
 
 class SSIM(torch.nn.Module):
-    def __init__(self):
+    def __init__(self, kernel_size: int = 3, K1: float = 0.01, K2: float = 0.03, L: float = 1.0):
+        """
+        L: dynamic range của dữ liệu ảnh. Ảnh đã chuẩn hóa [0,1] => L=1.
+        K1, K2: hằng số chuẩn của SSIM (mặc định 0.01, 0.03).
+        """
         super().__init__()
-        self.C1 = 0.01 ** 2
-        self.C2 = 0.03 ** 2
-        self.pool = torch.nn.AvgPool2d(3, 1)
+        self.C1 = (K1 * L) ** 2
+        self.C2 = (K2 * L) ** 2
+        # 'same' output size: padding = k//2, và không tính phần pad vào trung bình
+        self.pool = torch.nn.AvgPool2d(kernel_size, stride=1, padding=kernel_size // 2,
+                                       count_include_pad=False)
 
-    def forward(self, x, y):
+    def forward(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        # x, y: [B, 3, H, W] trong [0,1]
+        eps = 1e-6
+
         mu_x = self.pool(x)
         mu_y = self.pool(y)
-        sig_x = self.pool(x*x) - mu_x*mu_x
-        sig_y = self.pool(y*y) - mu_y*mu_y
-        sig_xy = self.pool(x*y) - mu_x*mu_y
-        ssim = ((2*mu_x*mu_y + self.C1) * (2*sig_xy + self.C2)) / ((mu_x*mu_x + mu_y*mu_y + self.C1) * (sig_x + sig_y + self.C2) + 1e-8)
-        return torch.clamp((1-ssim)/2, 0, 1)
+
+        sigma_x = self.pool(x * x) - mu_x * mu_x
+        sigma_y = self.pool(y * y) - mu_y * mu_y
+        sigma_xy = self.pool(x * y) - mu_x * mu_y
+
+        # đảm bảo dương tính số nhỏ
+        sigma_x = torch.clamp(sigma_x, min=0.0)
+        sigma_y = torch.clamp(sigma_y, min=0.0)
+
+        num = (2 * mu_x * mu_y + self.C1) * (2 * sigma_xy + self.C2)
+        den = (mu_x * mu_x + mu_y * mu_y + self.C1) * (sigma_x + sigma_y + self.C2) + eps
+        ssim = num / den  # kỳ vọng trong [-1, 1]
+
+        # trả về "SSIM loss map" trong [0,1], gộp kênh về [B,1,H,W]
+        ssim_loss_map = (1.0 - ssim) * 0.5
+        ssim_loss_map = torch.clamp(ssim_loss_map, 0.0, 1.0).mean(dim=1, keepdim=True)
+        return ssim_loss_map
+
 
 
 def _meshgrid_xy(B, H, W, device):

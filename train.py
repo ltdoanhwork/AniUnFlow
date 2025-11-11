@@ -119,7 +119,7 @@ def clip_main(args):
 if __name__ == "__main__":
     import argparse
     ap = argparse.ArgumentParser()
-    ap.add_argument("--config", default="configs/unsup_animotionflow.yaml")
+    ap.add_argument("--config", default="configs/unsup_clip_animotionflow.yaml")
     ap.add_argument("--clip", action="store_true", help="Use clip trainer")
     args = ap.parse_args()
     if args.clip:

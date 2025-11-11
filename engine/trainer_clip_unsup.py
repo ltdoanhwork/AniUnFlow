@@ -18,19 +18,8 @@ try:
 except Exception:
     _build_legacy_model = None
 
-# AniFlowFormer-T (clip-based)
-try:
-    from models.aniflowformer_t import AniFlowFormerT, ModelConfig as AFConfig
-    _HAS_AFT = True
-except Exception:
-    _HAS_AFT = False
-
-# Loss fallback for folderized version (if model has no .unsup_loss)
-try:
-    from models.aniflowformer_t.losses import Losses as AFTLosses
-    _HAS_AFT_LOSSES = True
-except Exception:
-    _HAS_AFT_LOSSES = False
+from models import AniFlowFormerT, ModelConfig as AFConfig
+from models import AFTLosses
 
 torch.autograd.set_detect_anomaly(False)
 
@@ -55,7 +44,6 @@ def concat_mean(chunks) -> float:
     cat = np.concatenate(arrs)
     return float(np.mean(cat)) if cat.size else float("nan")
 
-
 def _to_device(batch: Dict[str, Any], device: torch.device) -> Dict[str, Any]:
     out = {}
     for k, v in batch.items():
@@ -66,7 +54,6 @@ def _to_device(batch: Dict[str, Any], device: torch.device) -> Dict[str, Any]:
         else:
             out[k] = v
     return out
-
 
 def _masked_epe(pred: torch.Tensor, gt: torch.Tensor, valid: Optional[torch.Tensor] = None) -> torch.Tensor:
     """Compute AEPE per-batch with optional valid mask. Shape: (B,2,H,W)."""
@@ -82,7 +69,6 @@ def _masked_epe(pred: torch.Tensor, gt: torch.Tensor, valid: Optional[torch.Tens
     else:
         epe = epe_map.flatten(1).mean(-1)
     return epe  # (B,)
-
 
 # ---------- Flow colorization helpers ---------- #
 def _hsv_to_rgb_torch(h, s, v):
@@ -107,7 +93,6 @@ def _hsv_to_rgb_torch(h, s, v):
     b = torch.stack([conds[j][2] for j in i.flatten()], 0).view_as(h)
     return torch.stack([r, g, b], dim=1)  # (B,3,H,W)
 
-
 def _flow_to_rgb_t(flow: torch.Tensor) -> torch.Tensor:
     """
     flow: (B,2,H,W) -> (B,3,H,W) in [0,1]
@@ -131,7 +116,6 @@ def _flow_to_rgb_t(flow: torch.Tensor) -> torch.Tensor:
         v_ = torch.clamp(mag / (m95 + 1e-6), 0, 1)
         s = torch.ones_like(v_)
         return _hsv_to_rgb_torch(h, s, v_).clamp(0, 1)
-
 
 # ========================= Trainer (clip-based) ========================= #
 class UnsupervisedClipTrainer:
@@ -168,16 +152,7 @@ class UnsupervisedClipTrainer:
         self.model.train()
 
         # Loss fallback (for folderized version)
-        self.loss_mod = None
-        if not hasattr(self.model, "unsup_loss") and _HAS_AFT_LOSSES:
-            # weights from cfg["loss"]
-            lcfg = cfg.get("loss", {})
-            self.loss_mod = AFTLosses(
-                alpha_ssim=float(lcfg.get("alpha_ssim", 0.2)),
-                w_smooth=float(lcfg.get("w_smooth", 0.1)),
-                w_temp=float(lcfg.get("w_temp", 0.05)),
-                w_cycle=float(lcfg.get("w_cycle", 0.05)),
-            )
+        self.loss_mod = AFTLosses()
 
         # ------------------ Optimizer/Scheduler ------------------ #
         o = cfg["optim"]
@@ -222,7 +197,7 @@ class UnsupervisedClipTrainer:
     def _build_model_from_cfg(self, mcfg: Dict) -> torch.nn.Module:
         name = mcfg.get("name", "")
         args = mcfg.get("args", {})
-        if _HAS_AFT and name.lower() in {"aniflowformer-t", "aniflowformer_t", "aniflowformert"}:
+        if name.lower() in {"aniflowformer-t", "aniflowformer_t", "aniflowformert"}:
             return AniFlowFormerT(AFConfig(**args))
         # fallback to legacy builder
         if _build_legacy_model is not None:
@@ -234,15 +209,10 @@ class UnsupervisedClipTrainer:
         """
         Return a dict with keys: total, photo, smooth, temporal, cycle (when available).
         """
-        if hasattr(self.model, "unsup_loss"):
-            return self.model.unsup_loss(clip, out)
-        elif self.loss_mod is not None:
-            flows = out["flows"]
-            d = self.loss_mod.total(clip, flows)
-            # Ensure tensors (not floats) for backward
-            return {k: (v if torch.is_tensor(v) else torch.as_tensor(v, device=clip.device)) for k, v in d.items()}
-        else:
-            raise RuntimeError("No unsupervised loss available. Provide model.unsup_loss or AFT losses module.")
+        # flows = out["flows"]
+        d = self.loss_mod.unsup_loss(clip, out)
+        # Ensure tensors (not floats) for backward
+        return {k: (v if torch.is_tensor(v) else torch.as_tensor(v, device=clip.device)) for k, v in d.items()}
 
     # ------------------ Public APIs ------------------ #
     def fit(self, train_loader: DataLoader, val_loader: Optional[DataLoader] = None):

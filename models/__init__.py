@@ -1,1 +1,1 @@
-from .aniunflow import AniFlowFormerT, ModelConfig
+from .aniunflow import AniFlowFormerT, ModelConfig, AFTLosses

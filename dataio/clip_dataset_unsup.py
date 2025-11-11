@@ -1,4 +1,6 @@
 from __future__ import annotations
+import os
+from glob import glob
 from pathlib import Path
 from typing import List, Tuple, Optional
 import random
@@ -9,16 +11,52 @@ from torch.utils.data import Dataset
 import torchvision.transforms.functional as TF
 from PIL import Image
 from utils import frame_utils
+from tqdm import tqdm
 # utility to scan sequences: root/seq_xxx/*.png(jpg)
-def _scan_sequences(root: Path) -> List[List[Path]]:
-    seqs = []
-    for p in sorted(root.iterdir()):
-        if not p.is_dir():
-            continue
-        frames = sorted([q for q in p.iterdir() if q.suffix.lower() in {'.png', '.jpg', '.jpeg'}])
-        if len(frames) >= 3:
-            seqs.append(frames)
+from pathlib import Path
+from typing import List
+import os
+
+def _scan_sequences_v2(frame_root: Path,
+                       frame_subdir_glob: str = "color_*",
+                       min_frames: int = 3,
+                       merge_color_tracks: bool = False) -> List[List[Path]]:
+    """
+    frame_root = .../AnimeRun_v2/train/Frame_Anime
+    - Nếu scene có các thư mục con color_*:
+        + merge_color_tracks=False: mỗi color_* là 1 sequence.
+        + merge_color_tracks=True: gộp tất cả ảnh của các color_* thành 1 sequence dài.
+    - Nếu scene chứa ảnh trực tiếp: nhận scene làm 1 sequence.
+    """
+    valid_ext = {".png", ".jpg", ".jpeg"}
+    seqs: List[List[Path]] = []
+
+    if not frame_root.exists():
+        raise FileNotFoundError(f"Frame root not found: {frame_root}")
+
+    for scene_dir in sorted([p for p in frame_root.iterdir() if p.is_dir()]):
+        color_dirs = sorted([d for d in scene_dir.glob(frame_subdir_glob) if d.is_dir()])
+
+        if color_dirs:
+            if merge_color_tracks:
+                frames = []
+                for d in color_dirs:
+                    frames += sorted([q for q in d.iterdir() if q.suffix.lower() in valid_ext])
+                if len(frames) >= min_frames:
+                    seqs.append(frames)
+            else:
+                for d in color_dirs:
+                    frames = sorted([q for q in d.iterdir() if q.suffix.lower() in valid_ext])
+                    if len(frames) >= min_frames:
+                        seqs.append(frames)
+        else:
+            # fallback: scene chứa ảnh trực tiếp
+            frames = sorted([q for q in scene_dir.iterdir() if q.suffix.lower() in valid_ext])
+            if len(frames) >= min_frames:
+                seqs.append(frames)
+
     return seqs
+
 
 class UnlabeledClipDataset(Dataset):
     """Return clips of length T: (I_{t-L}, ..., I_{t+L}).
@@ -53,11 +91,17 @@ class UnlabeledClipDataset(Dataset):
         assert pad_mode in ("reflect","constant")
         self.pad_mode = pad_mode
         self.is_test = is_test
+        image_root = Path(os.path.join(root, 'train', 'Frame_Anime'))
+        self.seqs = _scan_sequences_v2(image_root, frame_subdir_glob="color_*", min_frames=3, merge_color_tracks=False)
+        print(f"Found {len(self.seqs)} sequences under {image_root}")
+        # for scene in os.listdir(image_root):
+        #     for color_pass in os.listdir(os.path.join(image_root, scene)):
+        #         self.seqs = sorted(glob(os.path.join(image_root, scene, color_pass, '*.png')))
+        # print(f"Found {len(self.seqs)} sequences under {self.root}")
 
-        self.seqs = _scan_sequences(self.root)
         # build index of valid (seq_id, center_t, stride)
         self.index: List[Tuple[int,int,int]] = []
-        for sid, frames in enumerate(self.seqs):
+        for sid, frames in tqdm(enumerate(self.seqs), desc="Building clip dataset index", total=len(self.seqs)):
             n = len(frames)
             for s in range(self.smin, self.smax+1):
                 for t in range(self.L * s, n - self.L * s):

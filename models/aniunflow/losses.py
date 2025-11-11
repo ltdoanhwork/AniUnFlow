@@ -3,10 +3,12 @@ from typing import Dict, List
 import torch
 import torch.nn.functional as F
 
-from .utils import image_gradients, warp
+from .utils import *
 
 
 class UnsupervisedFlowLoss:
+    def __init__(self):
+        self.ssim = SSIM()
     def photometric_loss(self, frames: torch.Tensor, flows: List[torch.Tensor], alpha_ssim: float = 0.2) -> torch.Tensor:
         B, T, C, H, W = frames.shape
         loss = 0.0
