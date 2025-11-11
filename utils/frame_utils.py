@@ -98,7 +98,6 @@ def writeFlow(filename,uv,v=None):
     tmp.astype(np.float32).tofile(f)
     f.close()
 
-
 def readFlowKITTI(filename):
     flow = cv2.imread(filename, cv2.IMREAD_ANYDEPTH|cv2.IMREAD_COLOR)
     flow = flow[:,:,::-1].astype(np.float32)
@@ -112,14 +111,12 @@ def readDispKITTI(filename):
     flow = np.stack([-disp, np.zeros_like(disp)], -1)
     return flow, valid
 
-
 def writeFlowKITTI(filename, uv):
     uv = 64.0 * uv + 2**15
     valid = np.ones([uv.shape[0], uv.shape[1], 1])
     uv = np.concatenate([uv, valid], axis=-1).astype(np.uint16)
     cv2.imwrite(filename, uv[..., ::-1])
     
-
 def read_gen(file_name, pil=False):
     ext = splitext(file_name)[-1]
     if ext == '.png' or ext == '.jpeg' or ext == '.ppm' or ext == '.jpg':
