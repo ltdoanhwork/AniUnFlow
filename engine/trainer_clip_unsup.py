@@ -271,17 +271,19 @@ class UnsupervisedClipTrainer:
                 })
 
     @torch.no_grad()
-    def validate(self, val_loader: DataLoader, epoch: int = 0) -> Dict[str, float]:
+    def validate(self, val_loader: DataLoader, epoch: int = 0, fast: bool = False) -> Dict[str, float]:
         self.model.eval()
         device = self.device
 
-        epe_all: List[np.ndarray] = []
-        thr1 = thr3 = thr5 = 0
-        valid_cnt_total = 0
+        # Tổng hợp an toàn cho nhiều kích thước
+        epe_sum = 0.0
+        valid_pix = 0
+        thr1_cnt = thr3_cnt = thr5_cnt = 0
 
-        proxy_losses = []  # if no GT, we report mean total loss
+        proxy_losses = []
+        did_viz = False
 
-        for batch in tqdm(val_loader, desc="Validate"):
+        for bidx, batch in enumerate(tqdm(val_loader, desc="Validate")):
             batch = _to_device(batch, device)
             clip = batch["clip"]  # (B,T,3,H,W)
             sam_masks = batch.get("sam_masks", None)
@@ -290,61 +292,86 @@ class UnsupervisedClipTrainer:
                 out = self.model(clip, sam_masks=sam_masks, use_sam=self.use_sam_default)
                 losses = self._compute_unsup_losses(clip, out)
 
-            # If GT flow is available (either single pair or list for each pair), compute AEPE.
+            # GT có thể là Tensor (1 pair) hoặc list[Tensor] (mỗi pair)
             gt_any = batch.get("flow", None)
             if gt_any is None:
-                gt_any = batch.get("flow_list", None)  # optional: list of GT flows for each consecutive pair
+                gt_any = batch.get("flow_list", None)
+
+            # valid mask có thể là Tensor (áp cho mọi pair) hoặc list[Tensor] tương ứng từng pair
+            valid_any = batch.get("valid", None)
 
             if gt_any is not None:
-                # Normalize to list per pair
-                if torch.is_tensor(gt_any):
-                    gt_list = [gt_any]
-                else:
-                    gt_list = gt_any  # assume list[Tensor]
-                # Match lengths
                 pred_list = out["flows"]
+                gt_list = [gt_any] if torch.is_tensor(gt_any) else gt_any
                 L = min(len(pred_list), len(gt_list))
+
                 for k in range(L):
-                    pred = pred_list[k]
-                    gt = gt_list[k]
-                    # If needed, up/downsample pred to GT size:
+                    pred = pred_list[k]          # (B,2,hp,wp)
+                    gt   = gt_list[k]            # (B,2,hg,wg)
+
+                    # Resize + scale theo từng trục
                     if pred.shape[-2:] != gt.shape[-2:]:
-                        scale = gt.shape[-1] / float(pred.shape[-1])
-                        pred = F.interpolate(pred, size=gt.shape[-2:], mode="bilinear", align_corners=True) * scale
-                    epe_map = torch.norm(pred - gt, dim=1)  # (B,H,W)
-                    epe_all.append(epe_map.detach().cpu().numpy())
-                    v = torch.ones_like(epe_map, dtype=torch.bool)
-                    valid_cnt_total += int(v.sum().item())
-                    thr1 += int((epe_map < 1.0).sum().item())
-                    thr3 += int((epe_map < 3.0).sum().item())
-                    thr5 += int((epe_map < 5.0).sum().item())
+                        hp, wp = pred.shape[-2:]
+                        hg, wg = gt.shape[-2:]
+                        pred = F.interpolate(pred, size=(hg, wg), mode="bilinear", align_corners=True)
+                        sx = wg / float(wp)
+                        sy = hg / float(hp)
+                        pred[:, 0] *= sx  # u theo W
+                        pred[:, 1] *= sy  # v theo H
+
+                    epe_map = torch.norm(pred - gt, dim=1)  # (B,hg,wg)
+
+                    # chọn valid mask
+                    if valid_any is None:
+                        valid = torch.ones_like(epe_map, dtype=torch.bool)
+                    else:
+                        if torch.is_tensor(valid_any):
+                            valid = valid_any
+                        else:
+                            valid = valid_any[k]
+                        # broadcast nếu cần
+                        if valid.dim() == 2:
+                            valid = valid.unsqueeze(0).expand_as(epe_map)
+                        elif valid.dim() == 3 and valid.size(0) == 1:
+                            valid = valid.expand_as(epe_map)
+                        valid = valid.bool()
+
+                    # cộng dồn an toàn
+                    e = (epe_map * valid).sum().item()
+                    n = valid.sum().item()
+                    epe_sum += e
+                    valid_pix += n
+
+                    # thresholds
+                    thr1_cnt += ((epe_map < 1.0) & valid).sum().item()
+                    thr3_cnt += ((epe_map < 3.0) & valid).sum().item()
+                    thr5_cnt += ((epe_map < 5.0) & valid).sum().item()
             else:
-                # No GT: fallback to proxy "total" loss
                 proxy_losses.append(float(losses["total"].detach().cpu().item()))
 
-            # Optional quick visualization
-            if self.writer and self.viz_enable:
-                # Use first two frames for context visualization
+            # Viz chỉ 1 lần đầu
+            if (self.writer is not None) and self.viz_enable and (not did_viz):
                 img0 = clip[:, 0]
                 img1 = clip[:, 1]
                 grid_img0 = vutils.make_grid(img0[: self.viz_max], nrow=min(4, self.viz_max), normalize=True)
                 grid_img1 = vutils.make_grid(img1[: self.viz_max], nrow=min(4, self.viz_max), normalize=True)
                 self.writer.add_image("val/img0", grid_img0, self.global_step)
                 self.writer.add_image("val/img1", grid_img1, self.global_step)
-                # Visualize first predicted pair
                 if out["flows"]:
                     flow_rgb = _flow_to_rgb_t(out["flows"][0][: self.viz_max].clamp(-500, 500))
                     grid_flow = vutils.make_grid(flow_rgb, nrow=min(4, self.viz_max))
                     self.writer.add_image("val/flow_rgb_pair0", grid_flow, self.global_step)
-            break  # keep single batch fast-val; remove this 'break' for full validation
+                did_viz = True
+
+            if fast:
+                break  # debug nhanh
 
         metrics: Dict[str, float] = {}
-        if epe_all:
-            all_np = np.concatenate(epe_all)
-            metrics["epe"] = float(np.mean(all_np))
-            metrics["1px"] = float(thr1 / max(1, valid_cnt_total))
-            metrics["3px"] = float(thr3 / max(1, valid_cnt_total))
-            metrics["5px"] = float(thr5 / max(1, valid_cnt_total))
+        if valid_pix > 0:
+            metrics["epe"] = epe_sum / valid_pix
+            metrics["1px"] = thr1_cnt / valid_pix
+            metrics["3px"] = thr3_cnt / valid_pix
+            metrics["5px"] = thr5_cnt / valid_pix
         if proxy_losses:
             metrics["total"] = float(np.mean(proxy_losses))
 
@@ -354,6 +381,7 @@ class UnsupervisedClipTrainer:
 
         self.model.train()
         return metrics
+
 
     # ------------------ internals ------------------ #
     def _init_scheduler(self, train_loader: DataLoader, epochs: int):

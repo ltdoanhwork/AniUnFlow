@@ -1,0 +1,94 @@
+# file: configs/linkto_anime_unsup.yaml
+# Un/Semi-supervised config for AniFlowFormer-T (clip-based, LinkTo-Anime)
+seed: 1337
+workspace: outputs/aniflowformer_t_linkto_anime
+debug:
+  detect_anomaly: false
+
+# ========================= Data =========================
+data:
+  name: linkto_anime_clip                  # dùng trong dataloader/router của bạn
+  # Roots
+  train_root: /home/serverai/ltdoanh/AniUnFlow/data/LinkTo-Anime
+  val_root:   /home/serverai/ltdoanh/AniUnFlow/data/LinkTo-Anime
+  img_exts: [".png", ".jpg", ".jpeg"]     # khung màu ở folder rendering
+  flow_ext: ".exr"                         # GT flow định dạng .exr
+  # Nếu loader của bạn cần bật đọc EXR:
+  read_flow_exr: true
+
+  # Clip sampling
+  T: 5                                     # theo lệnh bạn đã test
+  stride_min: 1
+  stride_max: 2
+
+  # Canvas (LinkTo-Anime hợp size 368x768 bạn vừa kiểm tra)
+  resize: true
+  keep_aspect: true
+  pad_mode: reflect
+  crop_size: [368, 768]                    # (H, W)
+
+  # Augmentations (áp dụng theo clip)
+  color_jitter: [0.3, 0.3, 0.3, 0.1]
+  do_flip: true
+  grayscale_p: 0.1
+
+  # Loader
+  batch_size: 6                             # train: bạn có thể tăng/giảm; val sẽ tự override nếu cần
+  num_workers: 4
+  drop_last: true
+  shuffle: true
+
+  # Flags theo split (train unsup, val có GT)
+  train_has_gt: false
+  val_has_gt:   true
+
+# ========================= Model =========================
+model:
+  name: AniFlowFormerT
+  args:
+    enc_channels: 64
+    token_dim: 192
+    lcm_depth: 6
+    lcm_heads: 4
+    gtr_depth: 2
+    gtr_heads: 4
+    iters_per_level: 4
+    use_sam: false                          # bật true nếu bạn cấp sam_masks trong batch
+
+# ========================= Optim =========================
+optim:
+  lr: 1.0e-4
+  weight_decay: 1.0e-4
+  epochs: 60
+  clip: 1.0
+  accum_steps: 1
+  scheduler:
+    type: cosine                            # cosine | onecycle
+    min_lr: 1.0e-6
+    per_batch: false
+
+# ========================= Loss =========================
+loss:
+  alpha_ssim: 0.2
+  w_smooth: 0.1
+  w_temp: 0.05
+  w_cycle: 0.05
+
+  # Semi-supervised term (chỉ dùng khi batch có GT)
+  w_epe_sup: 0.0                            # đặt >0 nếu muốn semi-supervised khi có GT trong train
+
+# ========================= Checkpointing =========================
+ckpt:
+  save_every: 1
+  keep_last: 5
+
+# ========================= Logging & Viz =========================
+logging:
+  use_tb: true
+  tb_dir: tb
+  log_every: 200
+
+viz:
+  enable: true
+  max_samples: 8
+  save_dir: val_vis
