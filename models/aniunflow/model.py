@@ -26,7 +26,10 @@ class ModelConfig:
     use_sam: bool = False
 
 
-
+def debug_mag(x, name):
+    with torch.no_grad():
+        mag = (x**2).sum(1).sqrt()  # B×H×W
+        print(f"[DEBUG] {name}: mean |flow| = {mag.mean().item():.4f}")
 
 class AniFlowFormerT(nn.Module):
     def __init__(self, cfg: ModelConfig):
@@ -60,8 +63,10 @@ class AniFlowFormerT(nn.Module):
             seg_tokens, edge_map = self.sam_adapter(sam_masks, lvl8_feats)
         latent = self.lcm(tokens, seg_tokens=seg_tokens, attn_bias=None)
         coarse_flows = self.gtr(latent, feats_levels)
-        flows = self.decoder(coarse_flows, feats_levels, latent)
-
+        debug_mag(coarse_flows[0], "coarse_flows[0]") 
+        # flows = self.decoder(coarse_flows, feats_levels, latent)
+        # debug_mag(flows[0], "flows[0]")
+        flows = coarse_flows 
         # produce simple occlusion logits at 1/8 for each pair (using lvl2 features of first frame)
         occ_logits = []
         lvl2 = feats_levels[1]

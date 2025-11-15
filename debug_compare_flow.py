@@ -142,6 +142,39 @@ def load_gt_flow(base_dir: str, stem: str, pattern: str,
     return None
 
 
+# ---------- Debug helpers ----------
+def debug_flow_stats(flow, name: str):
+    """Print basic stats for a flow tensor/array, for debugging.
+    flow: Tensor with shape [..., 2, H, W] or [H, W, 2], or numpy array
+    """
+    if isinstance(flow, torch.Tensor):
+        f = flow.detach().cpu()
+    else:
+        # numpy or already on CPU
+        f = torch.from_numpy(flow) if isinstance(flow, np.ndarray) else flow
+
+    print(f"[DEBUG] {name}:")
+    print(f"  shape = {tuple(f.shape)}")
+
+    # Try to interpret as (..., 2, H, W) or (H, W, 2)
+    if f.ndim == 4 and f.shape[-3] == 2:
+        # [..., 2, H, W]
+        u = f[..., 0, :, :]
+        v = f[..., 1, :, :]
+    elif f.ndim == 3 and f.shape[-1] == 2:
+        # [H, W, 2]
+        u = f[..., 0]
+        v = f[..., 1]
+    else:
+        print(f"  (not a standard flow shape, skip detailed stats)")
+        return
+
+    mag = torch.sqrt(u**2 + v**2)
+    print(f"  u: min={u.min():.4f}, max={u.max():.4f}, mean={u.mean():.4f}, std={u.std():.4f}")
+    print(f"  v: min={v.min():.4f}, max={v.max():.4f}, mean={v.mean():.4f}, std={v.std():.4f}")
+    print(f"  |flow|: min={mag.min():.4f}, max={mag.max():.4f}, mean={mag.mean():.4f}, std={mag.std():.4f}")
+
+
 # ---------- Viz helpers ----------
 def epe_map(pred: np.ndarray, gt: np.ndarray) -> np.ndarray:
     # pred, gt: HxWx2 float32
@@ -221,9 +254,39 @@ def run_compare(model: AniFlowFormerT, frames_dir: str, gt_dir: str, out_dir: st
             sub = imgs[s:s+T]  # may be shorter at tail
             if len(sub) < 2:
                 break
+
+            # Debug info
+            print(f"\n[PAIR {s}] -----------------------------------")
+            print(f"  Using frames: {Path(files[s]).name} -> {Path(files[s+1]).name}")
+            print(f"  Subclip length T' = {len(sub)}")
+
             clip = torch.stack(sub, dim=0).unsqueeze(0).to(DEVICE) / 255.0  # [1,T',3,H,W]
+            print(f"  clip.shape = {tuple(clip.shape)}, clip.min={clip.min():.4f}, clip.max={clip.max():.4f}")
+
             out = model(clip)
-            pred = out["flows"][0]  # [1,2,h,w] for (s->s+1)
+
+            # Debug model output
+            if isinstance(out, dict):
+                print(f"  [DEBUG] model output keys: {list(out.keys())}")
+                if "flows" in out:
+                    flows = out["flows"]
+                    if isinstance(flows, (list, tuple)):
+                        print(f"  flows is list/tuple of length {len(flows)}")
+                        for i, f in enumerate(flows):
+                            print(f"    flows[{i}].shape = {tuple(f.shape)}")
+                        pred = flows[0]
+                    else:
+                        print(f"  flows is Tensor with shape {tuple(flows.shape)}")
+                        pred = flows[0] if flows.ndim == 4 else flows
+                else:
+                    print(f"  [WARN] 'flows' not in model output, available keys: {list(out.keys())}")
+                    continue
+            else:
+                print(f"  [WARN] model output is not a dict. type: {type(out)}")
+                continue
+
+            # Debug raw model output flow
+            debug_flow_stats(pred, "pred_raw (model output)")
 
             # upsample & rescale to image size
             H0, W0 = imgs[s].shape[-2:]
@@ -231,8 +294,13 @@ def run_compare(model: AniFlowFormerT, frames_dir: str, gt_dir: str, out_dir: st
             f_up = F.interpolate(pred, size=(H0, W0), mode="bilinear", align_corners=True)
             sx = W0 / float(w); sy = H0 / float(h)
             f_up[:, 0] *= sx; f_up[:, 1] *= sy
+            debug_flow_stats(f_up, "pred_upsampled_scaled")
+
             f_up = unpad(f_up, pads)  # [1,2,H,W]
+            debug_flow_stats(f_up, "pred_unpadded")
+
             flow_pred = f_up[0].permute(1,2,0).detach().cpu().numpy().astype(np.float32)  # HxWx2
+            debug_flow_stats(flow_pred, "flow_pred_np (final)")
 
             # build GT path from first frame stem
             stem0 = Path(files[s]).stem
@@ -241,11 +309,14 @@ def run_compare(model: AniFlowFormerT, frames_dir: str, gt_dir: str, out_dir: st
                 print(f"[Warn] GT not found for {stem0}. Skip metrics/viz.")
                 continue
 
+            print(f"  Loaded GT: gt.shape = {gt.shape}, gt.dtype = {gt.dtype}")
+
             # match sizes and ensure correct shape
             if gt.shape[:2] != flow_pred.shape[:2]:
+                print(f"  [WARN] GT size {gt.shape[:2]} != pred size {flow_pred.shape[:2]}, resizing GT...")
                 gt = cv2.resize(gt, (flow_pred.shape[1], flow_pred.shape[0]), interpolation=cv2.INTER_NEAREST)
-                # Note: resizing flow requires scaling u,v too; assume GT already aligns to frames.
-                # If GT is at a different resolution originally, multiply u,v by scale (sx,sy) accordingly.
+
+            debug_flow_stats(gt, "gt_flow_np")
 
             # metrics
             diff = flow_pred - gt
@@ -254,21 +325,20 @@ def run_compare(model: AniFlowFormerT, frames_dir: str, gt_dir: str, out_dir: st
             c1 = float((epe < 1.0).mean())
             c3 = float((epe < 3.0).mean())
             c5 = float((epe < 5.0).mean())
+            print(f"  Metrics: AEPE={aepe:.4f}, 1px={c1:.4f}, 3px={c3:.4f}, 5px={c5:.4f}")
 
             # === FIX: Use shared normalization for GT and Pred ===
             # Compute shared rad_max from both GT and Pred
             shared_rad_max = compute_flow_magnitude_radmax([gt, flow_pred], robust_percentile=95)
+            print(f"  shared_rad_max = {shared_rad_max:.4f}")
             
             # === FIX: Proper image cropping (no black bar) ===
-            img_crop = imgs[s].unsqueeze(0) / 255.0  # [1,3,H_padded, W_padded]
+            img_crop = imgs[s].unsqueeze(0)   # [1,3,H_padded, W_padded]
             img_crop = unpad(img_crop, pads)  # [1,3,H,W] unpadded
             # Additional crop to match flow size
             H_flow, W_flow = flow_pred.shape[:2]
             img_crop = img_crop[..., :H_flow, :W_flow]  # safety crop
             img_np = img_crop[0].permute(1,2,0).cpu().numpy().astype(np.uint8)
-            
-            # Debug stats
-            print(f"  Image mean: {img_np.mean():.1f}, Pred mag: {np.sqrt((flow_pred**2).sum(-1)).mean():.4f}, GT mag: {np.sqrt((gt**2).sum(-1)).mean():.4f}")
             
             # === Use shared rad_max for both flows ===
             pred_rgb = flowviz_rgb(flow_pred, rad_max=shared_rad_max)                 # RGB
@@ -281,7 +351,7 @@ def run_compare(model: AniFlowFormerT, frames_dir: str, gt_dir: str, out_dir: st
             cv2.imwrite(out_png, panel[..., ::-1])  # save as BGR
 
             wr.writerow([s, Path(files[s]).name, Path(files[s+1]).name, aepe, c1, c3, c5, panel.shape[0], panel.shape[1]])
-            print(f"[{s}] AEPE={aepe:.3f}  1px={c1:.3f}  3px={c3:.3f}  5px={c5:.3f} rad_max={shared_rad_max:.4f} -> {out_png}")
+            print(f"[{s}] AEPE={aepe:.3f}  1px={c1:.3f}  3px={c3:.3f}  5px={c5:.3f} -> {out_png}")
 
     print(f"[OK] Saved per-pair viz PNGs and metrics CSV at: {out_dir}")
 
@@ -318,6 +388,6 @@ python debug_compare_flow.py \
   --gt_dir /home/serverai/ltdoanh/AniUnFlow/data/AnimeRun_v2/train/Flow/agent_basement2_weapon_approach/forward \
   --out_dir /home/serverai/ltdoanh/AniUnFlow/debug_viz \
   --T 5 --resize_h 368 --resize_w 768 \
-  --gt_pattern "{stem}" --gt_ext ".exr"
+  --gt_pattern "Image{stem}" --gt_ext ".exr"
 
 """
