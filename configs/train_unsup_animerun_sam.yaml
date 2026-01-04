@@ -1,0 +1,172 @@
+# Segment-Aware Unsupervised Optical Flow Training on AnimeRun-2D
+# ================================================================
+# Config following reference paper practices (arXiv:2405.02608)
+# All components are independently toggleable for ablation studies.
+
+seed: 1337
+workspace: outputs/segment_aware_unsup
+
+debug:
+  detect_anomaly: false
+  profile: false
+
+# ========================= Data =========================
+data:
+  name: animerun_clip
+  train_root: data/AnimeRun_v2/
+  val_root: data/AnimeRun_v2/
+  img_exts: [".png", ".jpg", ".jpeg"]
+
+  # Clip sampling
+  T: 5                                  # Odd length >= 3 (e.g., 5 or 7)
+  stride_min: 1
+  stride_max: 2
+
+  # Resize/pad to a fixed canvas (divisible by 16)
+  resize: true
+  keep_aspect: true
+  pad_mode: reflect
+  crop_size: [368, 768]                 # (H, W) -> final canvas
+
+  # Augmentations (applied consistently across clip)
+  color_jitter: [0.3, 0.3, 0.3, 0.1]    # brightness, contrast, saturation, hue
+  do_flip: true
+  grayscale_p: 0.1
+
+  # Loader
+  batch_size: 4                         # Adjust based on GPU memory
+  num_workers: 4
+  drop_last: true
+  shuffle: true
+
+  # Segment mask options
+  load_sam_masks: false                 # Set true to load pre-computed masks
+  sam_mask_dir: null                    # Directory for pre-computed masks
+  generate_sam_masks: true              # Generate masks on-the-fly
+
+# ========================= Model =========================
+model:
+  name: AniFlowFormerT
+  args:
+    enc_channels: 64
+    token_dim: 192
+    lcm_depth: 6
+    lcm_heads: 4
+    gtr_depth: 2
+    gtr_heads: 4
+    iters_per_level: 4
+    
+    # SAM-2 Integration (toggleable)
+    use_sam: true                       # Master toggle for SAM guidance
+    
+    # Segment-Aware Extensions (toggleable for ablation)
+    use_segment_cost_modulation: true   # Modulate cost volume with segment affinity
+    use_segment_attention_mask: true    # Use segment-based attention bias
+    use_segment_refinement: false       # Optional refinement head
+
+# ========================= SAM-2 Configuration =========================
+sam:
+  enabled: true                         # Master toggle for ablation
+  checkpoint: null                      # Auto-detect from models/sam2/checkpoints
+  model_type: sam2_hiera_t              # Model variant
+  num_segments: 16                      # Target segments per frame
+  use_amg: true                         # Use automatic mask generator
+  cache_masks: false                    # Cache masks to disk for efficiency
+
+# ========================= Optimization =========================
+optim:
+  # Learning rate schedule (following reference paper)
+  lr: 2.0e-4                            # Initial learning rate
+  weight_decay: 1.0e-4
+  betas: [0.9, 0.999]
+  
+  # Training duration
+  epochs: 100
+  warmup_epochs: 5                      # Linear warmup
+  
+  # Gradient handling
+  clip: 1.0                             # Gradient clipping
+  accum_steps: 1                        # Gradient accumulation
+
+  # Learning rate scheduler
+  scheduler:
+    type: cosine                        # cosine | onecycle | step
+    min_lr: 1.0e-6
+    per_batch: false                    # Per-epoch scheduling
+
+# ========================= Loss Configuration =========================
+loss:
+  # === Baseline Unsupervised Losses ===
+  w_photo: 1.0                          # Photometric loss weight
+  alpha_ssim: 0.2                       # SSIM contribution in photo loss
+  w_smooth: 0.1                         # Edge-aware smoothness
+  w_cons: 0.05                          # Forward-backward consistency
+
+  # === NEW: Segment-Aware Losses (toggleable) ===
+  segment_consistency:
+    enabled: true                       # Toggle for ablation
+    weight: 0.1                         # Loss weight
+    use_charbonnier: true               # Use robust loss
+
+  boundary_aware_smooth:
+    enabled: true                       # Toggle for ablation
+    weight: 0.15                        # Loss weight
+    boundary_suppress: 0.1              # Smoothness suppression at boundaries
+    use_second_order: true              # Include second-order term
+
+  temporal_memory:
+    enabled: false                      # Toggle for ablation
+    weight: 0.05
+    consistency_type: charbonnier       # l2 | cosine | charbonnier
+
+  # === Optional Semi-Supervised (if GT available) ===
+  w_epe_sup: 0.0                        # Set > 0 for semi-supervised
+
+# ========================= Validation =========================
+validation:
+  every_n_epochs: 5                     # Validate every N epochs
+  every_n_steps: null                   # Or validate every N steps
+  
+  # AnimeRun-compatible metrics
+  metrics:
+    - epe                               # Overall AEPE
+    - epe_occ                           # AEPE on occluded regions
+    - epe_nonocc                        # AEPE on non-occluded regions
+    - epe_flat                          # AEPE on flat regions
+    - epe_line                          # AEPE near contour lines
+    - epe_s<10                          # AEPE for motion < 10px
+    - epe_s10-50                        # AEPE for motion 10-50px
+    - epe_s>50                          # AEPE for motion > 50px
+    - 1px                               # % pixels with EPE < 1
+    - 3px                               # % pixels with EPE < 3
+    - 5px                               # % pixels with EPE < 5
+
+# ========================= Checkpointing =========================
+ckpt:
+  save_every: 5                         # Save every N epochs
+  keep_last: 3                          # Keep last N checkpoints
+  save_best: true                       # Save best model
+
+# ========================= Logging & Visualization =========================
+logging:
+  use_tb: true                          # TensorBoard logging
+  tb_dir: tb_segment_aware              # TensorBoard directory
+  log_every: 100                        # Log every N steps
+  
+  # Extended logging (for monitoring)
+  log_flow_stats: true                  # Flow magnitude statistics
+  log_segment_stats: true               # Segment size/count
+  log_occlusion_ratio: true             # Occlusion statistics
+  log_individual_losses: true           # Individual loss terms
+
+viz:
+  enable: true
+  max_samples: 8
+  save_dir: val_vis
+  save_flow_png: true                   # Save flow visualizations
+
+# ========================= Distributed Training =========================
+distributed:
+  enabled: false                        # Multi-GPU support
+  backend: nccl
+  find_unused_parameters: false

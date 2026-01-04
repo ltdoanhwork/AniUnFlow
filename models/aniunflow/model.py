@@ -24,6 +24,10 @@ class ModelConfig:
     gtr_heads: int = 4
     iters_per_level: int = 4
     use_sam: bool = False
+    # Segment-aware extensions (toggleable for ablation)
+    use_segment_cost_modulation: bool = False
+    use_segment_attention_mask: bool = False
+    use_segment_refinement: bool = False
 
 
 def debug_mag(x, name):
@@ -64,9 +68,9 @@ class AniFlowFormerT(nn.Module):
         latent = self.lcm(tokens, seg_tokens=seg_tokens, attn_bias=None)
         coarse_flows = self.gtr(latent, feats_levels)
         debug_mag(coarse_flows[0], "coarse_flows[0]") 
-        # flows = self.decoder(coarse_flows, feats_levels, latent)
-        # debug_mag(flows[0], "flows[0]")
-        flows = coarse_flows 
+        flows = self.decoder(coarse_flows, feats_levels, latent)
+        debug_mag(flows[0], "flows[0]")
+        # flows = coarse_flows 
         # produce simple occlusion logits at 1/8 for each pair (using lvl2 features of first frame)
         occ_logits = []
         lvl2 = feats_levels[1]

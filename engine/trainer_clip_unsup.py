@@ -152,7 +152,10 @@ class UnsupervisedClipTrainer:
         self.model.train()
 
         # Loss fallback (for folderized version)
-        self.loss_mod = AFTLosses()
+        self.loss_mod = AFTLosses(
+            alpha_ssim=self.cfg.get("loss", {}).get("alpha_ssim", 0.2),
+            w_smooth=self.cfg.get("loss", {}).get("w_smooth", 0.1),
+            w_cons=self.cfg.get("loss", {}).get("w_cons", 0.05),)
 
         # ------------------ Optimizer/Scheduler ------------------ #
         o = cfg["optim"]
@@ -205,14 +208,34 @@ class UnsupervisedClipTrainer:
         raise RuntimeError("No valid model builder found for config: {}".format(name))
 
     # ------------------ Loss wrapper ------------------ #
-    def _compute_unsup_losses(self, clip: torch.Tensor, out: Dict[str, List[torch.Tensor]]) -> Dict[str, torch.Tensor]:
+    def _compute_unsup_losses(
+        self,
+        clip: torch.Tensor,
+        out: Dict[str, List[torch.Tensor]],
+    ) -> Dict[str, torch.Tensor]:
         """
-        Return a dict with keys: total, photo, smooth, temporal, cycle (when available).
+        Forward-only unsupervised loss for validation.
+        Expect loss_mod.unsup_forward_only(clip, flows) -> dict with 'total', ...
         """
-        # flows = out["flows"]
-        d = self.loss_mod.unsup_loss(clip, out)
-        # Ensure tensors (not floats) for backward
-        return {k: (v if torch.is_tensor(v) else torch.as_tensor(v, device=clip.device)) for k, v in d.items()}
+        flows = out["flows"]
+        d = self.loss_mod.unsup_forward_only(clip, flows)
+        # Ensure tensors (not floats) for later .detach()
+        return {
+            k: (v if torch.is_tensor(v) else torch.as_tensor(v, device=clip.device))
+            for k, v in d.items()
+        }
+
+
+    def _compute_unsup_losses_bidirectional(
+        self,
+        clip: torch.Tensor,                # [B,T,3,H,W] in [0,1]
+        flows_fw: List[torch.Tensor],      # len = T-1
+        flows_bw: List[torch.Tensor],      # len = T-1
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Wrapper around UnsupervisedFlowLoss for bidirectional training.
+        """
+        return self.loss_mod.unsup_bidirectional(clip, flows_fw, flows_bw)
 
     # ------------------ Public APIs ------------------ #
     def fit(self, train_loader: DataLoader, val_loader: Optional[DataLoader] = None):
@@ -287,7 +310,8 @@ class UnsupervisedClipTrainer:
             batch = _to_device(batch, device)
             clip = batch["clip"]  # (B,T,3,H,W)
             sam_masks = batch.get("sam_masks", None)
-
+            if clip.dtype == torch.uint8:
+                clip = clip.float() / 255.0
             with torch.cuda.amp.autocast(enabled=torch.cuda.is_available()):
                 out = self.model(clip, sam_masks=sam_masks, use_sam=self.use_sam_default)
                 losses = self._compute_unsup_losses(clip, out)
@@ -434,13 +458,35 @@ class UnsupervisedClipTrainer:
                 clip = clip.float() / 255.0
 
             with torch.cuda.amp.autocast(enabled=torch.cuda.is_available()):
-                out = self.model(clip, sam_masks=sam_masks, use_sam=self.use_sam_default)
-                ldict = self._compute_unsup_losses(clip, out)
+                # 1) Forward direction
+                out_fw = self.model(clip, sam_masks=sam_masks, use_sam=self.use_sam_default)
+                flows_fw = out_fw["flows"]   # list length = T-1
+
+                # 2) Backward direction: đảo thời gian
+                clip_rev = torch.flip(clip, dims=[1])    # [B,T,3,H,W], t -> T-1-t
+                # Nếu có sam_masks thì cũng nên flip tương ứng:
+                sam_masks_rev = None
+                if sam_masks is not None:
+                    sam_masks_rev = torch.flip(sam_masks, dims=[1])
+                out_bw_rev = self.model(clip_rev, sam_masks=sam_masks_rev, use_sam=self.use_sam_default)
+                flows_bw_rev = out_bw_rev["flows"]       # list length = T-1 (nhưng tính trên clip đảo)
+
+                # 3) Re-index để có flows_bw[k] = flow (t+1 -> t)
+                T_cur = clip.shape[1]
+                assert len(flows_fw) == T_cur - 1 == len(flows_bw_rev)
+                flows_bw = [
+                    flows_bw_rev[len(flows_bw_rev) - 1 - k]
+                    for k in range(len(flows_fw))
+                ]
+
+
+                # 4) Tính unsupervised loss dùng cả forward + backward
+                ldict = self._compute_unsup_losses_bidirectional(clip, flows_fw, flows_bw)
                 loss = ldict["total"]
 
-                # Optional semi-supervised EPE term on the last predicted pair
+                # 5) Optional semi-supervised EPE (có thể chỉ dùng forward)
                 if self.w_epe_sup > 0.0 and (flow_gt is not None or flow_gt_list is not None):
-                    pred_list = out["flows"]
+                    pred_list = flows_fw   # dùng forward cho supervised
                     if flow_gt is not None:
                         gt_use = [flow_gt]
                     else:
@@ -450,10 +496,16 @@ class UnsupervisedClipTrainer:
                         pred = pred_list[k]
                         gt = gt_use[k]
                         if pred.shape[-2:] != gt.shape[-2:]:
-                            scale = gt.shape[-1] / float(pred.shape[-1])
-                            pred = F.interpolate(pred, size=gt.shape[-2:], mode="bilinear", align_corners=True) * scale
+                            H_gt, W_gt = gt.shape[-2:]
+                            h_pred, w_pred = pred.shape[-2:]
+                            pred = F.interpolate(pred, size=(H_gt, W_gt), mode="bilinear", align_corners=True)
+                            sx = W_gt / float(w_pred)
+                            sy = H_gt / float(h_pred)
+                            pred[:, 0] *= sx
+                            pred[:, 1] *= sy
                         epe_b = _masked_epe(pred, gt, valid_mask)
                         loss = loss + self.w_epe_sup * epe_b.mean()
+
 
             # Accumulate & step
             loss_to_backprop = loss / self.accum_steps
@@ -488,8 +540,8 @@ class UnsupervisedClipTrainer:
                     grid_img1 = vutils.make_grid(img1[: self.viz_max], nrow=min(4, self.viz_max), normalize=True)
                     self.writer.add_image("train/img0", grid_img0, self.global_step)
                     self.writer.add_image("train/img1", grid_img1, self.global_step)
-                    if out["flows"]:
-                        flow_rgb = _flow_to_rgb_t(out["flows"][0][: self.viz_max].clamp(-500, 500))
+                    if out_fw["flows"]:
+                        flow_rgb = _flow_to_rgb_t(out_fw["flows"][0][: self.viz_max].clamp(-500, 500))
                         grid_flow = vutils.make_grid(flow_rgb, nrow=min(4, self.viz_max))
                         self.writer.add_image("train/flow_rgb_pair0", grid_flow, self.global_step)
 
