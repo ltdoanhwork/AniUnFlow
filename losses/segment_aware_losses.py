@@ -117,7 +117,7 @@ class SegmentConsistencyFlowLoss(nn.Module):
             diff_sq = (diff ** 2).sum(dim=1, keepdim=True)  # (B, 1, H, W)
             
             if self.use_charbonnier:
-                variance_map = charbonnier(diff_sq.sqrt())
+                variance_map = charbonnier((diff_sq + self.eps).sqrt())
             else:
                 variance_map = diff_sq
             
@@ -210,6 +210,13 @@ class BoundaryAwareSmoothnessLoss(nn.Module):
                     segment_masks, size=(H, W), mode='bilinear', align_corners=False
                 )
             boundary_map = compute_segment_boundary(segment_masks)
+        
+        elif boundary_map is not None:
+            # Resize provided boundary map if needed
+            if boundary_map.shape[-2:] != (H, W):
+                boundary_map = F.interpolate(
+                    boundary_map.float(), size=(H, W), mode='bilinear', align_corners=False
+                )
         
         if boundary_map is not None:
             # Reduce smoothness at boundaries

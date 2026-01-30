@@ -196,12 +196,16 @@ class UnlabeledClipDataset(Dataset):
                  resize: bool = True,
                  keep_aspect: bool = False,
                  pad_mode: str = "reflect",
+                 load_sam_masks: bool = False,
+                 sam_mask_root: Optional[str] = None,
                  is_test: bool = False):
         assert T >= 3 and T % 2 == 1, "Use odd T >= 3 (e.g., 5)"
         self.root = Path(root)
         self.T = T
         self.L = T // 2
         self.is_test = is_test
+        self.load_sam_masks = load_sam_masks
+        self.sam_mask_root = Path(sam_mask_root) if sam_mask_root else None
 
         # strides & geometry
         self.smin = 1 if is_test else stride_min
@@ -285,6 +289,41 @@ class UnlabeledClipDataset(Dataset):
             return _resize_flow_keep_aspect_and_pad(flow_np, self.H, self.W, self.pad_mode)
         return _resize_flow_direct(flow_np, self.H, self.W)
 
+    def _resize_mask(self, mask_np: np.ndarray) -> np.ndarray:
+        """Resize segment mask (S, H, W)."""
+        if not self.resize_enable:
+            return mask_np
+        
+        # Transpose to H, W, S for cv2 resize
+        mask_hws = mask_np.transpose(1, 2, 0)
+        h0, w0 = mask_hws.shape[:2]
+        H, W = self.H, self.W
+        
+        if self.keep_aspect:
+             # Similar to keep aspect pad for image, but nearest neighbor for masks?
+             # Actually masks are soft (float), so linear is fine. 
+             # But if hard masks, nearest.
+             # Assuming soft masks from SAM-2 (float).
+             scale = min(W / float(w0), H / float(h0))
+             newW, newH = max(1, int(round(w0 * scale))), max(1, int(round(h0 * scale)))
+             
+             mask_rs = cv2.resize(mask_hws, (newW, newH), interpolation=cv2.INTER_LINEAR)
+             if mask_rs.ndim == 2: mask_rs = mask_rs[..., None]
+             
+             pad_h, pad_w = H - newH, W - newW
+             top, left = pad_h // 2, pad_w // 2
+             bottom, right = pad_h - top, pad_w - left
+             
+             # Pad with 0
+             mask_padded = cv2.copyMakeBorder(mask_rs, top, bottom, left, right, cv2.BORDER_CONSTANT, value=0)
+        else:
+            mask_padded = cv2.resize(mask_hws, (W, H), interpolation=cv2.INTER_LINEAR)
+            
+        if mask_padded.ndim == 2:
+            mask_padded = mask_padded[..., None]
+            
+        return mask_padded.transpose(2, 0, 1) # Back to S, H, W
+
     # ------------------- main -------------------
     def __getitem__(self, idx: int) -> Dict[str, Any]:
         sid, t, s = self.index[idx]
@@ -311,6 +350,47 @@ class UnlabeledClipDataset(Dataset):
         clip = torch.stack(imgs_t, dim=0)  # (T,3,H,W) if resized; else original sizes (must be consistent)
 
         sample: Dict[str, Any] = {"clip": clip, "stride": s, "center": t, "seq_id": sid}
+
+        # ---- load precomputed SAM masks ----
+        if self.load_sam_masks and self.sam_mask_root:
+            # Structure: sam_mask_root/[train|test]/Frame_Anime/Sequence/frame.pt
+            # Need to reconstruct path relative to data root
+            # frames[0] is absolute path.
+            # Convert to relative path from data root
+            
+            mask_list = []
+            for p in picks:
+                frame_path = frames[p]
+                # Assuming standard structure: .../Frame_Anime/Sequence/Frame/img.png
+                # We need to map this to .../sam_mask_root/.../img.pt
+                
+                # Robust way: find relative path from 'Frame_Anime' parent
+                try:
+                    # Find 'Frame_Anime' in path parts
+                    parts = frame_path.parts
+                    idx = parts.index('Frame_Anime')
+                    rel_parts = parts[idx:] # Frame_Anime/Sequence/Frame/img.png
+                    rel_path = Path(*rel_parts)
+                    
+                    mask_path = self.sam_mask_root / rel_path.parent / (frame_path.stem + ".pt")
+                    
+                    if mask_path.exists():
+                        mask = torch.load(mask_path) # (S, H, W)
+                        if self.resize_enable:
+                            mask_np = mask.numpy()
+                            mask_np = self._resize_mask(mask_np) # (S, H, W)
+                            mask = torch.from_numpy(mask_np)
+                        mask_list.append(mask)
+                    else:
+                        # Fallback empty
+                        mask_list.append(torch.zeros((1, self.H, self.W)))
+                except ValueError:
+                    # 'Frame_Anime' not found in path
+                    mask_list.append(torch.zeros((1, self.H, self.W)))
+            
+            if len(mask_list) == len(picks):
+                # Stack: (T, S, H, W)
+                sample["sam_masks"] = torch.stack(mask_list, dim=0)
 
         # ---- attach GT flows for test mode ----
         if self.is_test:

@@ -40,9 +40,9 @@ data:
   shuffle: true
 
   # Segment mask options
-  load_sam_masks: false                 # Set true to load pre-computed masks
-  sam_mask_dir: null                    # Directory for pre-computed masks
-  generate_sam_masks: true              # Generate masks on-the-fly
+  load_sam_masks: false                 # Set true to load precomputed masks
+  sam_mask_dir: "data/AnimeRun_v2/sam_masks" # Directory for precomputed masks
+  generate_sam_masks: false             # Set true to generate masks on-the-fly (if not loading)
 
 # ========================= Model =========================
 model:
@@ -67,8 +67,8 @@ model:
 # ========================= SAM-2 Configuration =========================
 sam:
   enabled: true                         # Master toggle for ablation
-  checkpoint: null                      # Auto-detect from models/sam2/checkpoints
-  model_type: sam2_hiera_t              # Model variant
+  checkpoint: models/sam2/checkpoints/sam2.1_hiera_tiny.pt  # Auto-detect from models/sam2/checkpoints
+  model_type: configs/sam2.1/sam2.1_hiera_t.yaml  # Model variant (SAM 2.1)
   num_segments: 16                      # Target segments per frame
   use_amg: true                         # Use automatic mask generator
   cache_masks: false                    # Cache masks to disk for efficiency

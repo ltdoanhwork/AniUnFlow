@@ -38,7 +38,7 @@ class SAM2GuidanceModule(nn.Module):
     def __init__(
         self,
         sam_checkpoint: Optional[str] = None,
-        model_type: str = "sam2_hiera_t",
+        model_type: str = "configs/sam2.1/sam2.1_hiera_t.yaml",
         device: str = "cuda",
         num_segments: int = 16,
         mask_threshold: float = 0.0,
@@ -85,7 +85,7 @@ class SAM2GuidanceModule(nn.Module):
             
             if self.sam_checkpoint is None:
                 # Default checkpoint path
-                self.sam_checkpoint = str(sam2_path / "checkpoints" / "sam2_hiera_tiny.pt")
+                self.sam_checkpoint = str(sam2_path / "checkpoints" / "sam2.1_hiera_tiny.pt")
             
             # Build SAM-2 model
             self._sam_model = build_sam2(
@@ -373,7 +373,7 @@ def build_sam2_guidance(cfg: Dict) -> SAM2GuidanceModule:
     sam_cfg = cfg.get('sam', {})
     return SAM2GuidanceModule(
         sam_checkpoint=sam_cfg.get('checkpoint'),
-        model_type=sam_cfg.get('model_type', 'sam2_hiera_t'),
+        model_type=sam_cfg.get('model_type', 'configs/sam2.1/sam2.1_hiera_t.yaml'),
         num_segments=sam_cfg.get('num_segments', 16),
         use_automatic_mask_generator=sam_cfg.get('use_amg', True),
     )

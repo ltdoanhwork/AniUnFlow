@@ -242,6 +242,8 @@ def main():
         keep_aspect=data_cfg.get("keep_aspect", True),
         pad_mode=data_cfg.get("pad_mode", "reflect"),
         is_test=False,
+        load_sam_masks=data_cfg.get("load_sam_masks", False),
+        sam_mask_root=data_cfg.get("sam_mask_dir", None),
     )
     
     val_ds = UnlabeledClipDataset(
@@ -257,6 +259,8 @@ def main():
         keep_aspect=data_cfg.get("keep_aspect", True),
         pad_mode=data_cfg.get("pad_mode", "reflect"),
         is_test=True,
+        load_sam_masks=False,  # Don't load masks for validation (computed on-the-fly if needed)
+        sam_mask_root=None,
     )
     
     train_loader = DataLoader(

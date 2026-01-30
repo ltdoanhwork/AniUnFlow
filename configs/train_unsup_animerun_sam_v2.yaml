@@ -1,0 +1,177 @@
+# Improved Unsupervised Training Configuration for AnimeRun
+# Based on RAFT/ARFlow/FlowFormer best practices
+# ================================================================
+
+seed: 1337
+workspace: outputs/segment_aware_unsup_v2
+
+debug:
+  detect_anomaly: false
+  profile: false
+
+# ========================= Data =========================
+data:
+  name: animerun_clip
+  train_root: data/AnimeRun_v2/
+  val_root: data/AnimeRun_v2/
+  img_exts: [".png", ".jpg", ".jpeg"]
+
+  # Clip sampling
+  T: 5                                  # Odd length >= 3
+  stride_min: 1
+  stride_max: 2
+
+  # Resize/pad - following AnimeRun paper settings
+  resize: true
+  keep_aspect: true
+  pad_mode: reflect
+  crop_size: [368, 768]                 # (H, W) same as AnimeRun paper
+
+  # ENHANCED: More aggressive augmentation to prevent zero-flow collapse
+  color_jitter: [0.4, 0.4, 0.4, 0.15]   # Increased from [0.3, 0.3, 0.3, 0.1]
+  do_flip: true
+  grayscale_p: 0.2                      # Increased from 0.1
+
+  # Loader
+  batch_size: 4
+  num_workers: 4
+  drop_last: true
+  shuffle: true
+
+  # Segment mask options
+  load_sam_masks: false                 # Generate on-the-fly
+  sam_mask_dir: "data/AnimeRun_v2/sam_masks"
+  generate_sam_masks: false
+
+# ========================= Model =========================
+model:
+  name: AniFlowFormerT
+  args:
+    enc_channels: 64
+    token_dim: 192
+    lcm_depth: 6
+    lcm_heads: 4
+    gtr_depth: 2
+    gtr_heads: 4
+    iters_per_level: 4
+    
+    # SAM-2 Integration
+    use_sam: true
+    
+    # Segment-Aware Extensions
+    use_segment_cost_modulation: true
+    use_segment_attention_mask: true
+    use_segment_refinement: false
+
+# ========================= SAM-2 Configuration =========================
+sam:
+  enabled: true
+  checkpoint: models/sam2/checkpoints/sam2.1_hiera_tiny.pt
+  model_type: configs/sam2.1/sam2.1_hiera_t.yaml
+  num_segments: 16
+  use_amg: true
+  cache_masks: false
+
+# ========================= IMPROVED: Optimization =========================
+optim:
+  # FIXED: Lower initial LR following RAFT unsupervised practices
+  lr: 1.25e-4                           # Was 2e-4 (too high!)
+  weight_decay: 1.0e-4
+  betas: [0.9, 0.999]
+  
+  # Training duration
+  epochs: 120                           # Increased from 100
+  warmup_epochs: 10                     # Increased from 5 (critical!)
+  
+  # Gradient handling
+  clip: 1.0
+  accum_steps: 1
+
+  # FIXED: OneCycleLR scheduler (proven better for optical flow)
+  scheduler:
+    type: onecycle                      # Changed from cosine!
+    max_lr: 1.25e-4                     # Peak LR
+    pct_start: 0.05                     # 5% warmup, then decay
+    anneal_strategy: linear
+    cycle_momentum: false               # Important for Adam
+    div_factor: 25.0                    # Start LR = max_lr / 25
+    final_div_factor: 10000.0           # End LR = max_lr / 10000
+
+# ========================= IMPROVED: Loss Configuration =========================
+loss:
+  # === Baseline Unsupervised Losses ===
+  # FIXED: Two-stage photometric loss (following ARFlow/RAFT practices)
+  w_photo: 1.0
+  alpha_ssim: 0.85                      # Higher SSIM weight (was 0.2!)
+  # Note: Will use Census transform after warmup (implement in trainer)
+  
+  w_smooth: 0.5                         # Increased from 0.1
+  w_cons: 0.1                           # Increased from 0.05
+
+  # === Segment-Aware Losses ===
+  segment_consistency:
+    enabled: true
+    weight: 0.05                        # Reduced from 0.1 (too strong initially)
+    use_charbonnier: true
+
+  boundary_aware_smooth:
+    enabled: true
+    weight: 0.1                         # Reduced from 0.15
+    boundary_suppress: 0.05             # Stronger suppression (was 0.1)
+    use_second_order: true
+
+  temporal_memory:
+    enabled: false                      # Keep disabled initially
+    weight: 0.05
+    consistency_type: charbonnier
+
+  # === Optional Semi-Supervised ===
+  w_epe_sup: 0.0
+
+# ========================= Validation =========================
+validation:
+  every_n_epochs: 5
+  every_n_steps: null
+  
+  # AnimeRun-compatible metrics
+  metrics:
+    - epe
+    - epe_occ
+    - epe_nonocc
+    - epe_flat
+    - epe_line
+    - epe_s<10
+    - epe_s10-50
+    - epe_s>50
+    - 1px
+    - 3px
+    - 5px
+
+# ========================= Checkpointing =========================
+ckpt:
+  save_every: 5
+  keep_last: 3
+  save_best: true
+
+# ========================= Logging & Visualization =========================
+logging:
+  use_tb: true
+  tb_dir: tb_segment_aware_v2
+  log_every: 50                         # Reduced from 100 for better monitoring
+  
+  log_flow_stats: true
+  log_segment_stats: true
+  log_occlusion_ratio: true
+  log_individual_losses: true
+
+viz:
+  enable: true
+  max_samples: 8
+  save_dir: val_vis_v2
+  save_flow_png: true
+
+# ========================= Distributed Training =========================
+distributed:
+  enabled: false
+  backend: nccl
+  find_unused_parameters: false
