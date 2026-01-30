@@ -1,0 +1,44 @@
+workspace: "work_dirs/ddflow_unsup_animerun"
+
+data:
+  train:
+    name: "AnimeRun"
+    root: "data/AnimeRun_v2"
+    list_file: "data/AnimeRun_v2/train.txt"
+    batch_size: 4
+    num_workers: 4
+    clip_len: 3
+    crop_size: [384, 768] # Must be div by 64 for PWC/DDFlow
+  
+  val:
+    name: "AnimeRun"
+    root: "data/AnimeRun_v2"
+    list_file: "data/AnimeRun_v2/test.txt"
+    batch_size: 1
+    num_workers: 2
+    clip_len: 3
+
+model:
+  name: "DDFlowNet"
+
+loss:
+  alpha_ssim: 0.85
+  w_smooth: 10.0
+
+optim:
+  lr: 2.0e-4
+  weight_decay: 1.0e-4
+  epochs: 50
+  accum_steps: 1
+  clip: 1.0
+
+logging:
+  use_tb: true
+  log_every: 50
+  tb_dir: "tb"
+
+validation:
+  every_n_epochs: 1
+
+ckpt:
+  save_every: 5

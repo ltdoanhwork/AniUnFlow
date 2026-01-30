@@ -1,0 +1,67 @@
+workspace: "workspaces/unsamflow_animerun"
+
+data:
+  train:
+    name: "AnimeRun"
+    root: "data/AnimeRun_v2"
+    list_file: "data/AnimeRun_v2/train.txt"
+    batch_size: 4
+    num_workers: 4
+    clip_len: 2 # UnSAMFlow is pairwise
+    crop_size: [384, 768]
+    color_jitter: [0.1, 0.1, 0.1, 0.02]
+    do_flip: true
+    # UnSAMFlow specific: need masks
+    load_sam_masks: true
+    sam_mask_root: "data/AnimeRun_v2/SAM_Masks" # Assuming this path, user might need to adjust
+  
+  val:
+    name: "AnimeRun"
+    root: "data/AnimeRun_v2" # Script appends /test
+    list_file: "data/AnimeRun_v2/test.txt"
+    batch_size: 1
+    num_workers: 2
+    clip_len: 2
+    load_sam_masks: true
+    sam_mask_root: "data/AnimeRun_v2/SAM_Masks"
+
+model:
+  name: "PWCLite"
+  args:
+    input_adj_map: false
+    input_boundary: true   # Enable boundary concatenation
+    add_mask_corr: true    # Enable mask correlation
+    reduce_dense: true
+    learned_upsampler: false
+    aggregation_type: "concat"
+
+loss:
+  w_l1: 0.15
+  w_ssim: 0.85
+  w_ternary: 0.0
+  w_smooth: 10.0
+  w_ph_scales: [1.0, 1.0, 1.0, 1.0, 0.0]
+  smooth_type: "2nd" # 1st or 2nd
+  smooth_edge: "full_seg" # Use SAM masks for edge aware
+  edge_aware_alpha: 10.0
+  ransac_threshold: 3
+
+optim:
+  lr: 2.0e-4
+  weight_decay: 1.0e-4
+  epochs: 100
+  warmup_epochs: 5
+  scheduler:
+    type: "onecycle"
+
+logging:
+  use_tb: true
+  log_every: 50
+  tb_dir: "tb"
+
+ckpt:
+  save_every: 5
+
+viz:
+  enable: true
+  max_samples: 4
