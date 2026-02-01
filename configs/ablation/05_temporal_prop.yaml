@@ -1,0 +1,117 @@
+# Ablation Experiment: Temporal Propagation Only
+# ================================================
+# Tests flow-guided temporal segment propagation.
+
+seed: 1337
+workspace: outputs/ablation_05_temporal_prop
+
+debug:
+  detect_anomaly: false
+  profile: false
+
+data:
+  name: animerun_clip
+  train_root: data/AnimeRun_v2/
+  val_root: data/AnimeRun_v2/
+  img_exts: [".png", ".jpg", ".jpeg"]
+  T: 3
+  stride_min: 1
+  stride_max: 2
+  resize: true
+  keep_aspect: true
+  pad_mode: reflect
+  crop_size: [368, 768]
+  color_jitter: [0.3, 0.3, 0.3, 0.1]
+  do_flip: true
+  grayscale_p: 0.1
+  batch_size: 8
+  num_workers: 4
+  drop_last: true
+  shuffle: true
+  
+  load_sam_masks: true
+  sam_mask_dir: data/AnimeRun_v2/SAM_Masks
+  generate_sam_masks: false
+
+model:
+  name: AniFlowFormerT
+  args:
+    enc_channels: 64
+    token_dim: 192
+    lcm_depth: 6
+    lcm_heads: 4
+    gtr_depth: 2
+    gtr_heads: 4
+    iters_per_level: 4
+    use_sam: true
+    use_segment_cost_modulation: false
+    use_segment_attention_mask: false
+    use_segment_refinement: false
+
+# SAM-2: TEMPORAL PROPAGATION ONLY
+sam:
+  enabled: true
+  adapter_version: "v2"
+  use_soft_boundary: false
+  use_learned_embedding: false
+  use_temporal_propagation: true  # ✅ ENABLED
+  use_attention_bias: false
+  use_multi_scale: false
+
+optim:
+  lr: 2.0e-4
+  weight_decay: 1.0e-4
+  betas: [0.9, 0.999]
+  epochs: 50
+  warmup_epochs: 5
+  clip: 1.0
+  accum_steps: 1
+  scheduler:
+    type: onecycle
+    max_lr: 2.0e-4
+    pct_start: 0.05
+    anneal_strategy: linear
+    cycle_momentum: false
+    div_factor: 25.0
+    final_div_factor: 10000.0
+
+loss:
+  w_photo: 1.0
+  alpha_ssim: 0.85
+  w_smooth: 0.5
+  w_cons: 0.05
+  segment_consistency:
+    enabled: false
+  boundary_aware_smooth:
+    enabled: true
+    weight: 0.2
+  temporal_memory:
+    enabled: false
+  w_epe_sup: 0.0
+
+validation:
+  every_n_epochs: 5
+  metrics: [epe, 1px, 3px, 5px]
+
+ckpt:
+  save_every: 10
+  keep_last: 2
+  save_best: true
+
+logging:
+  use_tb: true
+  tb_dir: tb_ablation_05_temporal_prop
+  log_every: 50
+  log_flow_stats: true
+  log_segment_stats: true
+  log_occlusion_ratio: true
+  log_individual_losses: true
+
+viz:
+  enable: true
+  max_samples: 4
+  save_dir: val_vis_ablation_05
+  save_flow_png: true
+
+distributed:
+  enabled: false
