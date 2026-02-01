@@ -7,7 +7,7 @@ data:
     list_file: "data/AnimeRun_v2/train.txt"
     batch_size: 4
     num_workers: 4
-    clip_len: 2 # UnSAMFlow is pairwise
+    clip_len: 3 # UnSAMFlow is pairwise but dataset requires T>=3 (odd)
     crop_size: [384, 768]
     color_jitter: [0.1, 0.1, 0.1, 0.02]
     do_flip: true
@@ -21,7 +21,7 @@ data:
     list_file: "data/AnimeRun_v2/test.txt"
     batch_size: 1
     num_workers: 2
-    clip_len: 2
+    clip_len: 3
     load_sam_masks: true
     sam_mask_root: "data/AnimeRun_v2/SAM_Masks"
 

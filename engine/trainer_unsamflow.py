@@ -5,6 +5,7 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 from types import SimpleNamespace
+from argparse import Namespace
 
 import numpy as np
 import torch
@@ -42,7 +43,7 @@ class UnSAMFlowTrainer:
         # Config for loss
         lcfg = cfg.get("loss", {})
         # Map config dict to SimpleNamespace for UnSAMFlow compatibility
-        loss_args = SimpleNamespace(
+        loss_args = Namespace(
             w_l1=lcfg.get("w_l1", 0.0),
             w_ssim=lcfg.get("w_ssim", 0.0), # Usually 0.85
             w_ternary=lcfg.get("w_ternary", 1.0),
@@ -83,7 +84,7 @@ class UnSAMFlowTrainer:
         mcfg = self.cfg.get("model", {})
         args = mcfg.get("args", {})
         # PWCLite expects a config object
-        model_cfg = SimpleNamespace(
+        model_cfg = Namespace(
             input_adj_map=args.get("input_adj_map", False),
             input_boundary=args.get("input_boundary", False),
             add_mask_corr=args.get("add_mask_corr", False),
@@ -166,14 +167,12 @@ class UnSAMFlowTrainer:
                 flows_12 = res_dict["flows_12"]
                 flows_21 = res_dict["flows_21"]
                 
-                # Loss
-                loss_pack_12 = self.criterion(flows_12, img1, img2, full_seg1=seg1, full_seg2=seg2)
-                loss_pack_21 = self.criterion(flows_21, img2, img1, full_seg1=seg2, full_seg2=seg1)
-                
-                loss12 = loss_pack_12[0]
-                loss21 = loss_pack_21[0]
-                
-                total_loss = (loss12 + loss21) / 2.0
+                # Combined flows: UnSAMFlow loss expects [B, 4, H, W] (concat fw and bw)
+                combined_flows = [torch.cat([f12, f21], dim=1) for f12, f21 in zip(flows_12, flows_21)]
+
+                # Bi-directional loss in one call
+                loss_pack = self.criterion(combined_flows, img1, img2, full_seg1=seg1, full_seg2=seg2)
+                total_loss = loss_pack[0]
             
             self.scaler.scale(total_loss).backward()
             self.scaler.step(self.optimizer)
