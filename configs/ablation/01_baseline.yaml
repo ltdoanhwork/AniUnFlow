@@ -25,7 +25,7 @@ data:
   color_jitter: [0.3, 0.3, 0.3, 0.1]
   do_flip: true
   grayscale_p: 0.1
-  batch_size: 8
+  batch_size: 2
   num_workers: 4
   drop_last: true
   shuffle: true
