@@ -364,35 +364,35 @@ class UnlabeledClipDataset(Dataset):
                 # Assuming standard structure: .../Frame_Anime/Sequence/Frame/img.png
                 # We need to map this to .../sam_mask_root/.../img.pt
                 
-                # Robust way: find relative path from 'Frame_Anime' parent
+                # Robust way: find relative path from 'train/Frame_Anime' or 'test/Frame_Anime'
                 try:
                     # Find 'Frame_Anime' in path parts
                     parts = frame_path.parts
                     idx = parts.index('Frame_Anime')
-                    rel_parts = parts[idx:] # Frame_Anime/Sequence/Frame/img.png
+                    # Include the parent (train/test) to match SAM_Masks structure on disk
+                    # Frame_Anime is at idx, so train/test is at idx-1
+                    rel_parts = parts[max(0, idx-1):] 
                     rel_path = Path(*rel_parts)
-                    
                     mask_path = self.sam_mask_root / rel_path.parent / (frame_path.stem + ".pt")
-                    
-                    if mask_path.exists():
-                        mask = torch.load(mask_path)  # Either (H, W) uint8 or (S, H, W) float
-                        if self.resize_enable and mask.ndim in [2, 3]:
-                            mask_np = mask.numpy()
-                            if mask.ndim == 2:
-                                # Integer label map (H, W)
-                                from scipy.ndimage import zoom
-                                zoom_factors = (self.H / mask_np.shape[0], self.W / mask_np.shape[1])
-                                mask_np = zoom(mask_np, zoom_factors, order=0)  # Nearest neighbor for labels
-                            else:
-                                # Legacy multi-channel (S, H, W)
-                                mask_np = self._resize_mask(mask_np)
-                            mask = torch.from_numpy(mask_np)
-                        mask_list.append(mask)
-                    else:
-                        # Fallback: empty integer label map (background only)
-                        mask_list.append(torch.zeros((self.H, self.W), dtype=torch.uint8))
-                except ValueError:
-                    # 'Frame_Anime' not found in path
+                except (ValueError, IndexError):
+                    mask_path = Path("nonexistent")
+                
+                if mask_path.exists():
+                    mask = torch.load(mask_path)  # Either (H, W) uint8 or (S, H, W) float
+                    if self.resize_enable and mask.ndim in [2, 3]:
+                        mask_np = mask.numpy()
+                        if mask.ndim == 2:
+                            # Integer label map (H, W)
+                            from scipy.ndimage import zoom
+                            zoom_factors = (self.H / mask_np.shape[0], self.W / mask_np.shape[1])
+                            mask_np = zoom(mask_np, zoom_factors, order=0)  # Nearest neighbor for labels
+                        else:
+                            # Legacy multi-channel (S, H, W)
+                            mask_np = self._resize_mask(mask_np)
+                        mask = torch.from_numpy(mask_np)
+                    mask_list.append(mask)
+                else:
+                    # Fallback: empty integer label map (background only)
                     mask_list.append(torch.zeros((self.H, self.W), dtype=torch.uint8))
             
             if len(mask_list) == len(picks):

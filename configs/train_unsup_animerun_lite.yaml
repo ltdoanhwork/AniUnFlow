@@ -35,14 +35,14 @@ data:
   grayscale_p: 0.1
 
   # Loader
-  batch_size: 8                         # Can likely increase this since model is smaller
+  batch_size: 4                         # Reduced due to concurrent GPU processes
   num_workers: 4
   drop_last: true
   shuffle: true
 
   # No SAM masks needed
-  load_sam_masks: false
-  sam_mask_dir: null
+  load_sam_masks: true
+  sam_mask_dir: data/AnimeRun_v2/SAM_Masks
   generate_sam_masks: false
 
 # ========================= Model =========================
