@@ -375,22 +375,48 @@ class UnlabeledClipDataset(Dataset):
                     mask_path = self.sam_mask_root / rel_path.parent / (frame_path.stem + ".pt")
                     
                     if mask_path.exists():
-                        mask = torch.load(mask_path) # (S, H, W)
-                        if self.resize_enable:
+                        mask = torch.load(mask_path)  # Either (H, W) uint8 or (S, H, W) float
+                        if self.resize_enable and mask.ndim in [2, 3]:
                             mask_np = mask.numpy()
-                            mask_np = self._resize_mask(mask_np) # (S, H, W)
+                            if mask.ndim == 2:
+                                # Integer label map (H, W)
+                                from scipy.ndimage import zoom
+                                zoom_factors = (self.H / mask_np.shape[0], self.W / mask_np.shape[1])
+                                mask_np = zoom(mask_np, zoom_factors, order=0)  # Nearest neighbor for labels
+                            else:
+                                # Legacy multi-channel (S, H, W)
+                                mask_np = self._resize_mask(mask_np)
                             mask = torch.from_numpy(mask_np)
                         mask_list.append(mask)
                     else:
-                        # Fallback empty
-                        mask_list.append(torch.zeros((1, self.H, self.W)))
+                        # Fallback: empty integer label map (background only)
+                        mask_list.append(torch.zeros((self.H, self.W), dtype=torch.uint8))
                 except ValueError:
                     # 'Frame_Anime' not found in path
-                    mask_list.append(torch.zeros((1, self.H, self.W)))
+                    mask_list.append(torch.zeros((self.H, self.W), dtype=torch.uint8))
             
             if len(mask_list) == len(picks):
-                # Stack: (T, S, H, W)
-                sample["sam_masks"] = torch.stack(mask_list, dim=0)
+                # Stack: (T, S, H, W) for legacy or (T, H, W) for optimized
+                stacked_masks = torch.stack(mask_list, dim=0)
+                
+                # Detect format and normalize to (T, 1, H, W) uint8 labels
+                if stacked_masks.dtype == torch.uint8 and stacked_masks.ndim == 3:
+                    # Optimized format: (T, H, W) uint8 integer labels
+                    sample["sam_masks"] = stacked_masks.unsqueeze(1)  # (T, 1, H, W)
+                elif stacked_masks.dtype in [torch.float16, torch.float32] and stacked_masks.ndim == 4:
+                    # Legacy format: (T, S, H, W) float multi-channel masks
+                    # Convert to integer labels on-the-fly
+                    T, S, H, W = stacked_masks.shape
+                    labels = torch.zeros((T, H, W), dtype=torch.uint8)
+                    for t in range(T):
+                        max_vals, label_t = stacked_masks[t].max(dim=0)  # (H, W)
+                        label_t = label_t + 1  # Shift to 1-indexed
+                        label_t[max_vals < 0.5] = 0  # Background threshold
+                        labels[t] = label_t.to(torch.uint8)
+                    sample["sam_masks"] = labels.unsqueeze(1)  # (T, 1, H, W)
+                else:
+                    # Unexpected format, use as-is
+                    sample["sam_masks"] = stacked_masks
 
         # ---- attach GT flows for test mode ----
         if self.is_test:

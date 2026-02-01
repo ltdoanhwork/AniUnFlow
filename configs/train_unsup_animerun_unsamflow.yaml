@@ -45,6 +45,7 @@ loss:
   smooth_edge: "full_seg" # Use SAM masks for edge aware
   edge_aware_alpha: 10.0
   ransac_threshold: 3
+  occ_aware_start_epoch: 5 # Warmup period to avoid 0-loss deadlock
 
 optim:
   lr: 2.0e-4

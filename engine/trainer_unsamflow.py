@@ -58,6 +58,7 @@ class UnSAMFlowTrainer:
             ransac_threshold=lcfg.get("ransac_threshold", 3),
         )
         self.criterion = unFlowLoss(loss_args).to(self.device)
+        self.occ_aware_start_epoch = int(lcfg.get("occ_aware_start_epoch", 5))
         
         # Optimizer
         optim_cfg = cfg.get("optim", {})
@@ -148,15 +149,15 @@ class UnSAMFlowTrainer:
                 # But for now, let's assume the dataset provides what we need or we fix it.
                 # If we passed load_sam_masks=True, we should get something.
                 
-                # Check shape.
-                # If [B, T, 1, H, W] -> Squeeze to [B, T, H, W]
-                masks = batch["sam_masks"]
+                # Check shape and move to device
+                # Dataset returns (B, T, 1, H, W) uint8
+                masks = batch["sam_masks"].to(self.device)
                 if masks.ndim == 5 and masks.shape[2] == 1:
-                    masks = masks.squeeze(2)
+                    masks = masks.squeeze(2)  # (B, T, H, W)
                 
-                # Take pairs
-                seg1 = masks[:, 0].unsqueeze(1) # [B, 1, H, W]
-                seg2 = masks[:, 1].unsqueeze(1)
+                # Take pairs and convert to long for PWCLite
+                seg1 = masks[:, 0].unsqueeze(1).long()  # (B, 1, H, W)
+                seg2 = masks[:, 1].unsqueeze(1).long()
             
             self.optimizer.zero_grad()
             
@@ -171,7 +172,9 @@ class UnSAMFlowTrainer:
                 combined_flows = [torch.cat([f12, f21], dim=1) for f12, f21 in zip(flows_12, flows_21)]
 
                 # Bi-directional loss in one call
-                loss_pack = self.criterion(combined_flows, img1, img2, full_seg1=seg1, full_seg2=seg2)
+                # Disable occ_aware during early epochs to avoid zero-gradient deadlock
+                occ_aware = self.current_epoch >= self.occ_aware_start_epoch
+                loss_pack = self.criterion(combined_flows, img1, img2, full_seg1=seg1, full_seg2=seg2, occ_aware=occ_aware)
                 total_loss = loss_pack[0]
             
             self.scaler.scale(total_loss).backward()

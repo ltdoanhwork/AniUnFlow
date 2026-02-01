@@ -84,22 +84,49 @@ def load_sequence_frames(seq_path):
     frames = sorted(list(seq_path.glob("*.png")) + list(seq_path.glob("*.jpg")))
     return frames
 
+def masks_to_label_map(masks):
+    """
+    Convert multi-channel soft masks to single-channel integer label map.
+    
+    Args:
+        masks: (S, H, W) float masks [0, 1]
+    
+    Returns:
+        labels: (H, W) uint8 label map, where 0=background, 1-S=segment IDs
+    """
+    S, H, W = masks.shape
+    
+    if S == 0:
+        # No segments, return background only
+        return torch.zeros((H, W), dtype=torch.uint8)
+    
+    # For each pixel, find segment with maximum activation
+    max_vals, labels = masks.max(dim=0)  # labels: (H, W) in [0, S-1]
+    
+    # Shift labels: 0 → background, 1-S → segment IDs
+    labels = labels + 1
+    
+    # Set pixels with low activation to background
+    labels[max_vals < 0.5] = 0
+    
+    return labels.to(torch.uint8)
+
 def save_compressed_mask(mask_tensor, out_path):
     """
-    Save mask tensor with compression.
-    mask_tensor: (S, H, W) float/bool
+    Save mask tensor as integer label map (storage-optimized).
+    
+    Args:
+        mask_tensor: (S, H, W) float/bool soft masks
+    
+    Storage:
+        - Old: S × H × W × 2 bytes (float16) ≈ 16 × 512 × 1024 × 2 = 16 MB/frame
+        - New: H × W × 1 byte (uint8) ≈ 512 × 1024 = 0.5 MB/frame (32× smaller)
     """
-    # Convert to sparse or indexed PNG if possible, 
-    # but for S segments (soft masks?), we likely want float16 or int8
+    # Convert to integer label map
+    label_map = masks_to_label_map(mask_tensor)  # (H, W) uint8
     
-    # Strategy 1: Save as torch tensor (simple)
-    # Convert to half precision to save space
-    mask_half = mask_tensor.half()
-    
-    # Or to uint8 if it's hard masks (0-255)
-    # mask_uint8 = (mask_tensor * 255).to(torch.uint8)
-    
-    torch.save(mask_half, out_path)
+    # Save as compressed tensor
+    torch.save(label_map, out_path)
 
 def main():
     args = parse_args()

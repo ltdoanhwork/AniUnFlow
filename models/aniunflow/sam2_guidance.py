@@ -118,6 +118,31 @@ class SAM2GuidanceModule(nn.Module):
             self._loaded = True
             self._sam_model = None
     
+    def _masks_to_label_map(self, masks: torch.Tensor) -> torch.Tensor:
+        """
+        Convert multi-channel masks to integer label map.
+        
+        Args:
+            masks: (S, H, W) float masks
+        
+        Returns:
+            labels: (1, H, W) uint8 integer labels where 0=background, 1-S=segments
+        """
+        if masks.shape[0] == 0:
+            # No segments
+            return torch.zeros((1, masks.shape[1], masks.shape[2]), dtype=torch.uint8, device=masks.device)
+        
+        # Find segment with max activation per pixel
+        max_vals, labels = masks.max(dim=0)  # (H, W)
+        
+        # Shift to 1-indexed (0 reserved for background)
+        labels = labels + 1
+        
+        # Set low-activation pixels to background
+        labels[max_vals < 0.5] = 0
+        
+        return labels.unsqueeze(0).to(torch.uint8)  # (1, H, W)
+
     @torch.no_grad()
     def extract_segment_masks(
         self,
@@ -130,8 +155,12 @@ class SAM2GuidanceModule(nn.Module):
             clip: Video clip tensor (B, T, 3, H, W) normalized to [0, 1]
         
         Returns:
-            segment_masks: (B, T, S, H, W) soft segment masks
-                where S is the number of segments
+            segment_labels: (B, T, 1, H, W) uint8 integer label maps
+                where 0=background, 1-S=segment IDs
+                
+        Note: This returns integer label maps instead of soft masks for:
+            1. Storage efficiency (30× smaller)
+            2. UnSAMFlow compatibility (expects integer labels)
         """
         self._lazy_load()
         
@@ -140,12 +169,12 @@ class SAM2GuidanceModule(nn.Module):
         
         if self._sam_model is None:
             # Fallback: grid-based pseudo-segmentation
-            return self._fallback_grid_segmentation(clip)
+            return self._fallback_grid_segmentation_labels(clip)
         
         # Process each batch item
-        all_masks = []
+        all_labels = []
         for b in range(B):
-            batch_masks = []
+            batch_labels = []
             for t in range(T):
                 frame = clip[b, t]  # (3, H, W)
                 
@@ -153,19 +182,22 @@ class SAM2GuidanceModule(nn.Module):
                 frame_np = (frame.permute(1, 2, 0).cpu().numpy() * 255).astype('uint8')
                 
                 # Generate masks
-                masks = self._generate_frame_masks(frame_np)
+                masks_np = self._generate_frame_masks(frame_np)  # (S, H, W)
                 
-                # Convert to tensor and resize
-                masks_tensor = torch.from_numpy(masks).float().to(device)  # (S, H, W)
+                # Convert to tensor
+                masks_tensor = torch.from_numpy(masks_np).float().to(device)
                 
                 # Ensure we have exactly num_segments
                 masks_tensor = self._normalize_segment_count(masks_tensor)
                 
-                batch_masks.append(masks_tensor)
+                # Convert to integer label map
+                labels = self._masks_to_label_map(masks_tensor)  # (1, H, W)
+                
+                batch_labels.append(labels)
             
-            all_masks.append(torch.stack(batch_masks, dim=0))  # (T, S, H, W)
+            all_labels.append(torch.stack(batch_labels, dim=0))  # (T, 1, H, W)
         
-        return torch.stack(all_masks, dim=0)  # (B, T, S, H, W)
+        return torch.stack(all_labels, dim=0)  # (B, T, 1, H, W)
     
     def _generate_frame_masks(self, frame_np) -> 'np.ndarray':
         """Generate segment masks for a single frame."""
@@ -218,7 +250,7 @@ class SAM2GuidanceModule(nn.Module):
         return masks[:self.num_segments]
     
     def _fallback_grid_segmentation(self, clip: torch.Tensor) -> torch.Tensor:
-        """Fallback grid-based segmentation when SAM-2 is unavailable."""
+        """Fallback grid-based segmentation when SAM-2 is unavailable (legacy multi-channel)."""
         B, T, C, H, W = clip.shape
         device = clip.device
         
@@ -232,6 +264,36 @@ class SAM2GuidanceModule(nn.Module):
         masks = masks.expand(B, T, -1, -1, -1)   # (B, T, S, H, W)
         
         return masks
+
+    def _fallback_grid_segmentation_labels(self, clip: torch.Tensor) -> torch.Tensor:
+        """Fallback grid-based segmentation returning integer labels."""
+        B, T, C, H, W = clip.shape
+        device = clip.device
+        
+        # Create grid label map directly
+        n_rows = int(torch.sqrt(torch.tensor(self.num_segments)).item())
+        n_cols = (self.num_segments + n_rows - 1) // n_rows
+        
+        labels = torch.zeros((H, W), dtype=torch.uint8, device=device)
+        
+        cell_h = H // n_rows
+        cell_w = W // n_cols
+        
+        label_id = 1  # Start from 1 (0 is background)
+        for i in range(n_rows):
+            for j in range(n_cols):
+                if label_id > self.num_segments:
+                    break
+                y1, y2 = i * cell_h, (i + 1) * cell_h if i < n_rows - 1 else H
+                x1, x2 = j * cell_w, (j + 1) * cell_w if j < n_cols - 1 else W
+                labels[y1:y2, x1:x2] = label_id
+                label_id += 1
+        
+        # Expand for batch and time dimensions
+        labels = labels.unsqueeze(0).unsqueeze(0).unsqueeze(0)  # (1, 1, 1, H, W)
+        labels = labels.expand(B, T, -1, -1, -1)  # (B, T, 1, H, W)
+        
+        return labels
     
     def _normalize_segment_count(self, masks: torch.Tensor) -> torch.Tensor:
         """Ensure we have exactly num_segments masks."""
