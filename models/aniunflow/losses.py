@@ -14,6 +14,7 @@ class UnsupervisedFlowLoss:
         * Photometric loss (L1 + SSIM loss) in both directions.
         * Edge-aware smoothness on forward flow.
         * Forward-backward consistency.
+        * Flow magnitude regularization (prevents collapse to zero).
     Assumes:
         * clip in [0,1], shape [B,T,3,H,W]
         * flows_fw, flows_bw: lists of [B,2,h,w], len = T-1
@@ -25,12 +26,22 @@ class UnsupervisedFlowLoss:
         w_smooth: float = 0.1,
         w_cons: float = 0.05,
         smooth_alpha: float = 10.0,
+        # Anti-collapse regularization
+        w_mag_reg: float = 0.01,      # Weight for magnitude regularization
+        min_flow_mag: float = 0.5,    # Minimum expected average flow magnitude
+        use_photo_gradient: bool = True,  # Use photometric gradients as flow prior
     ):
         self.ssim = SSIM()
         self.alpha_ssim = alpha_ssim
         self.w_smooth = w_smooth
         self.w_cons = w_cons
         self.smooth_alpha = smooth_alpha
+        
+        # Anti-collapse parameters
+        self.w_mag_reg = w_mag_reg
+        self.min_flow_mag = min_flow_mag
+        self.use_photo_gradient = use_photo_gradient
+
 
     # ---------- small helpers ---------- #
     def _upsample_flow(self, f: torch.Tensor, H: int, W: int) -> torch.Tensor:
@@ -95,6 +106,49 @@ class UnsupervisedFlowLoss:
         smooth = (weights * flow_grad_mag).mean()
         return self.w_smooth * smooth
 
+    def _magnitude_regularization(
+        self,
+        flow_up: torch.Tensor,
+        I1: torch.Tensor,
+        I2: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Flow magnitude regularization to prevent collapse to zero.
+        
+        Strategy: Penalize when flow magnitude is significantly below what
+        photometric differences suggest it should be.
+        
+        flow_up: [B,2,H,W] in pixels
+        I1, I2: [B,3,H,W] reference and target images
+        Returns scalar loss (already multiplied by w_mag_reg).
+        """
+        if self.w_mag_reg <= 0:
+            return torch.tensor(0.0, device=flow_up.device)
+        
+        # Compute actual flow magnitude
+        flow_mag = torch.norm(flow_up, dim=1, keepdim=True)  # [B,1,H,W]
+        mean_flow_mag = flow_mag.mean()
+        
+        if self.use_photo_gradient:
+            # Use image difference as a soft prior for where flow should exist
+            # High difference = likely motion = should have flow
+            img_diff = (I1 - I2).abs().mean(dim=1, keepdim=True)  # [B,1,H,W]
+            
+            # Expected flow magnitude scales with image difference
+            # (rough heuristic: 10 pixels of flow causes ~0.1 intensity change)
+            expected_mag = img_diff * 100.0  # Scale factor
+            expected_mag = expected_mag.clamp(min=self.min_flow_mag, max=50.0)
+            
+            # Penalize if flow is much less than expected
+            mag_deficit = F.relu(expected_mag - flow_mag)
+            loss = mag_deficit.mean()
+        else:
+            # Simple minimum magnitude penalty
+            # Penalize if average flow magnitude is below threshold
+            loss = F.relu(self.min_flow_mag - mean_flow_mag)
+        
+        return self.w_mag_reg * loss
+
     def _fb_consistency_pair(
         self,
         flow_fw_up: torch.Tensor,
@@ -130,6 +184,7 @@ class UnsupervisedFlowLoss:
         total_photo = 0.0
         total_smooth = 0.0
         total_cons = 0.0
+        total_mag_reg = 0.0
         count = 0
 
         for k in range(T - 1):
@@ -153,25 +208,32 @@ class UnsupervisedFlowLoss:
 
             # forward-backward consistency
             cons = self._fb_consistency_pair(F_fw_up, F_bw_up)
+            
+            # magnitude regularization (prevents zero-flow collapse)
+            mag_reg = self._magnitude_regularization(F_fw_up, I1, I2)
 
             total_photo += photo
             total_smooth += smooth
             total_cons += cons
+            total_mag_reg += mag_reg
             count += 1
 
         if count > 0:
             total_photo = total_photo / count
             total_smooth = total_smooth / count
             total_cons = total_cons / count
+            total_mag_reg = total_mag_reg / count
 
-        total = total_photo + total_smooth + total_cons
+        total = total_photo + total_smooth + total_cons + total_mag_reg
 
         return {
             "photo": total_photo,
             "smooth": total_smooth,
             "cons": total_cons,
+            "mag_reg": total_mag_reg,
             "total": total,
         }
+
 
     # Optional: keep a forward-only version if you still want it for debugging
     def unsup_forward_only(self, clip: torch.Tensor, flows: List[torch.Tensor]) -> Dict[str, torch.Tensor]:

@@ -248,7 +248,12 @@ class UnSAMFlowTrainer:
                     flow_pred[:, 1] *= (gt.shape[-2] / float(img1.shape[-2]))
 
                 epe = _masked_epe(flow_pred, gt)
-                epe_list.append(epe.cpu().numpy())
+                # Handle both scalar and batch EPE tensors
+                if epe.dim() == 0:
+                    epe_list.append(epe.item())
+                else:
+                    epe_list.append(epe.cpu().numpy())
+
                 
         metrics = {}
         if epe_list:

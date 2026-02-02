@@ -112,6 +112,9 @@ loss:
     weight: 0.0
 
   w_epe_sup: 0.0
+  w_mag_reg: 0.01
+  min_flow_mag: 0.5
+  use_photo_gradient: true
 
 # ========================= Validation =========================
 validation:

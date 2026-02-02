@@ -165,7 +165,12 @@ class SegmentAwareTrainer:
             alpha_ssim=cfg.get("loss", {}).get("alpha_ssim", 0.2),
             w_smooth=cfg.get("loss", {}).get("w_smooth", 0.1),
             w_cons=cfg.get("loss", {}).get("w_cons", 0.05),
+            # Anti-collapse regularization
+            w_mag_reg=cfg.get("loss", {}).get("w_mag_reg", 0.01),
+            min_flow_mag=cfg.get("loss", {}).get("min_flow_mag", 0.5),
+            use_photo_gradient=cfg.get("loss", {}).get("use_photo_gradient", True),
         )
+
         
         # Segment-aware losses
         self.use_segment_losses = self._has_segment_losses()
