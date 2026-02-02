@@ -170,7 +170,10 @@ class SegmentAwareTrainer:
             min_flow_mag=cfg.get("loss", {}).get("min_flow_mag", 0.5),
             use_photo_gradient=cfg.get("loss", {}).get("use_photo_gradient", True),
         )
-
+        
+        # Warmup settings for occlusion masking
+        self.warmup_steps = cfg.get("loss", {}).get("warmup_steps", 0)
+        self.disable_occ_during_warmup = cfg.get("loss", {}).get("disable_occ_during_warmup", False)
         
         # Segment-aware losses
         self.use_segment_losses = self._has_segment_losses()
@@ -367,7 +370,12 @@ class SegmentAwareTrainer:
                 flows_bw = [flows_bw_rev[len(flows_bw_rev) - 1 - k] for k in range(len(flows_fw))]
                 
                 # Compute base unsupervised loss
-                loss_dict = self.base_loss.unsup_bidirectional(clip, flows_fw, flows_bw)
+                # Disable occlusion masking during warmup to let flow build up
+                use_occ_mask = True
+                if self.disable_occ_during_warmup and self.global_step < self.warmup_steps:
+                    use_occ_mask = False
+                loss_dict = self.base_loss.unsup_bidirectional(clip, flows_fw, flows_bw, use_occ_mask=use_occ_mask)
+
                 total_loss = loss_dict["total"]
                 
                 # Add segment-aware losses

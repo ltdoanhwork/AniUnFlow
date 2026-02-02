@@ -43,7 +43,6 @@ class UnsupervisedFlowLoss:
         self.use_photo_gradient = use_photo_gradient
 
 
-    # ---------- small helpers ---------- #
     def _upsample_flow(self, f: torch.Tensor, H: int, W: int) -> torch.Tensor:
         """
         Upsample flow from (h,w) to (H,W) and scale u,v correctly.
@@ -57,19 +56,46 @@ class UnsupervisedFlowLoss:
         f_up[:, 1] *= sy
         return f_up
 
+    def _get_occu_mask_bidirection(
+        self,
+        flow_fw: torch.Tensor,
+        flow_bw: torch.Tensor,
+        alpha: float = 0.01,
+        beta: float = 0.5,
+    ) -> torch.Tensor:
+        """
+        Compute occlusion mask using forward-backward consistency.
+        Pixels where |fw + warp(bw, fw)| > alpha * (|fw|^2 + |bw_warp|^2) + beta are occluded.
+        Returns: occlusion mask [B,1,H,W] where 1 = occluded, 0 = visible.
+        """
+        flow_bw_warp = warp(flow_bw, flow_fw)
+        flow_diff = flow_fw + flow_bw_warp
+        
+        mag_sq_fw = (flow_fw ** 2).sum(dim=1, keepdim=True)
+        mag_sq_bw = (flow_bw_warp ** 2).sum(dim=1, keepdim=True)
+        
+        occ_thresh = alpha * (mag_sq_fw + mag_sq_bw) + beta
+        occ_mask = ((flow_diff ** 2).sum(dim=1, keepdim=True) > occ_thresh).float()
+        
+        return occ_mask
+
     def _photometric_pair(
         self,
         I_ref: torch.Tensor,
         I_tgt: torch.Tensor,
         flow_up: torch.Tensor,
+        vis_mask: torch.Tensor = None,
         eps: float = 1e-3,
     ) -> torch.Tensor:
         """
         Photometric loss between I_ref and I_tgt warped by flow_up.
         I_ref, I_tgt: [B,3,H,W] in [0,1]
         flow_up: [B,2,H,W] in pixels
+        vis_mask: [B,1,H,W] visibility mask (1=visible, 0=occluded)
+        
         Uses:
             L1 Charbonnier + SSIM loss map (already "1-SSIM" in [0,1])
+            Only penalizes visible pixels (if vis_mask provided)
         Returns scalar loss.
         """
         I_tgt_w = warp(I_tgt, flow_up)
@@ -82,7 +108,15 @@ class UnsupervisedFlowLoss:
         ssim_loss_map = self.ssim(I_ref, I_tgt_w)             # [B,1,H,W]
 
         photo_map = (1.0 - self.alpha_ssim) * l1_map + self.alpha_ssim * ssim_loss_map
-        return photo_map.mean()
+        
+        if vis_mask is not None:
+            # Normalize by visible area to avoid pushing toward zero flow
+            photo = (photo_map * vis_mask).sum() / (vis_mask.sum() + 1e-6)
+        else:
+            photo = photo_map.mean()
+        
+        return photo
+
 
     def _smoothness_pair(self, flow_up: torch.Tensor, img: torch.Tensor) -> torch.Tensor:
         """
@@ -170,10 +204,11 @@ class UnsupervisedFlowLoss:
         clip: torch.Tensor,              # [B,T,3,H,W]
         flows_fw: List[torch.Tensor],    # len = T-1, each [B,2,h,w]
         flows_bw: List[torch.Tensor],    # len = T-1, each [B,2,h,w]
+        use_occ_mask: bool = True,       # Whether to use occlusion-aware masking
     ) -> Dict[str, torch.Tensor]:
         """
         Compute bidirectional unsupervised loss for a clip:
-        - Forward & backward photometric losses.
+        - Forward & backward photometric losses with occlusion masking.
         - Edge-aware smoothness on forward flows.
         - Forward-backward consistency.
         Returns a dict with keys: 'photo', 'smooth', 'cons', 'total'.
@@ -197,11 +232,22 @@ class UnsupervisedFlowLoss:
             # upsample & rescale to image size
             F_fw_up = self._upsample_flow(F_fw, H, W)
             F_bw_up = self._upsample_flow(F_bw, H, W)
+            
+            # Compute occlusion masks using FB-consistency
+            if use_occ_mask:
+                occ_fw = self._get_occu_mask_bidirection(F_fw_up, F_bw_up)
+                occ_bw = self._get_occu_mask_bidirection(F_bw_up, F_fw_up)
+                vis_mask_fw = 1 - occ_fw  # Visibility = 1 - occlusion
+                vis_mask_bw = 1 - occ_bw
+            else:
+                vis_mask_fw = None
+                vis_mask_bw = None
 
-            # photometric forward & backward
-            photo_fw = self._photometric_pair(I1, I2, F_fw_up)
-            photo_bw = self._photometric_pair(I2, I1, F_bw_up)
+            # photometric forward & backward with occlusion masking
+            photo_fw = self._photometric_pair(I1, I2, F_fw_up, vis_mask_fw)
+            photo_bw = self._photometric_pair(I2, I1, F_bw_up, vis_mask_bw)
             photo = 0.5 * (photo_fw + photo_bw)
+
 
             # smoothness (on forward; can optionally also add backward if needed)
             smooth = self._smoothness_pair(F_fw_up, I1)
