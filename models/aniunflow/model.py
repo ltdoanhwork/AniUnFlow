@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 
 from .encoder import PyramidEncoder
-from .tokenizer import CostTokenizer
+from .global_matcher import GlobalMatchingTokenizer  # Replaced CostTokenizer
 from .lcm import LatentCostMemory
 from .gtr import GlobalTemporalRegressor
 from .decoder import MSRecurrentDecoder
@@ -41,7 +41,8 @@ class AniFlowFormerT(nn.Module):
         self.cfg = cfg
         c = cfg.enc_channels
         self.encoder = PyramidEncoder(c)
-        self.tokenizer = CostTokenizer([c, c*2, c*3], token_dim=cfg.token_dim)
+        # Use GlobalMatchingTokenizer for global all-pairs matching
+        self.tokenizer = GlobalMatchingTokenizer([c, c*2, c*3], token_dim=cfg.token_dim, num_heads=4)
         self.lcm = LatentCostMemory(token_dim=cfg.token_dim, depth=cfg.lcm_depth, heads=cfg.lcm_heads)
         self.gtr = GlobalTemporalRegressor(token_dim=cfg.token_dim, heads=cfg.gtr_heads, depth=cfg.gtr_depth)
         self.decoder = MSRecurrentDecoder([c, c*2, c*3], iters_per_level=cfg.iters_per_level)
