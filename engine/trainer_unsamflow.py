@@ -252,7 +252,7 @@ class UnSAMFlowTrainer:
                 if epe.dim() == 0:
                     epe_list.append(epe.item())
                 else:
-                    epe_list.append(epe.cpu().numpy())
+                    epe_list.append(epe.detach().cpu().numpy())
 
                 
         metrics = {}

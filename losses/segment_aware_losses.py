@@ -98,7 +98,7 @@ class SegmentConsistencyFlowLoss(nn.Module):
         # Resize masks to flow resolution if needed
         if segment_masks.shape[-2:] != (H, W):
             segment_masks = F.interpolate(
-                segment_masks, size=(H, W), mode='bilinear', align_corners=False
+                segment_masks.float(), size=(H, W), mode='bilinear', align_corners=False
             )
         
         total_loss = 0.0
@@ -207,7 +207,7 @@ class BoundaryAwareSmoothnessLoss(nn.Module):
         if boundary_map is None and segment_masks is not None:
             if segment_masks.shape[-2:] != (H, W):
                 segment_masks = F.interpolate(
-                    segment_masks, size=(H, W), mode='bilinear', align_corners=False
+                    segment_masks.float(), size=(H, W), mode='bilinear', align_corners=False
                 )
             boundary_map = compute_segment_boundary(segment_masks)
         

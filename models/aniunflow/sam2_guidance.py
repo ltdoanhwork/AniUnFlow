@@ -386,8 +386,10 @@ class SAM2GuidanceModule(nn.Module):
             padding = kernel_size // 2
             for s in range(S):
                 m = masks_t[:, s:s+1]  # (B, 1, H, W)
-                dilated = F.max_pool2d(m, kernel_size, stride=1, padding=padding)
-                eroded = -F.max_pool2d(-m, kernel_size, stride=1, padding=padding)
+                # Convert to float for max_pool2d (doesn't support Byte on CUDA)
+                m_float = m.float()
+                dilated = F.max_pool2d(m_float, kernel_size, stride=1, padding=padding)
+                eroded = -F.max_pool2d(-m_float, kernel_size, stride=1, padding=padding)
                 boundary = boundary + (dilated - eroded).clamp(0, 1)
             
             boundary = boundary.clamp(0, 1)

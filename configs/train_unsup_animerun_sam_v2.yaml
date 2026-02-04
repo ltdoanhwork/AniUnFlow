@@ -47,13 +47,14 @@ data:
 model:
   name: AniFlowFormerT
   args:
-    enc_channels: 64
-    token_dim: 192
-    lcm_depth: 6
+    # Reduced Model Dimensions for "Lite" version
+    enc_channels: 32                    # Reduced from 64
+    token_dim: 128                      # Reduced from 192
+    lcm_depth: 4                        # Reduced from 6
     lcm_heads: 4
-    gtr_depth: 2
+    gtr_depth: 1                        # Reduced from 2
     gtr_heads: 4
-    iters_per_level: 4
+    iters_per_level: 3                  # Reduced from 4
     
     # SAM-2 Integration
     use_sam: true

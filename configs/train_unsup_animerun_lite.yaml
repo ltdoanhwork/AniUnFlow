@@ -99,12 +99,12 @@ loss:
   w_cons: 0.02                          # Reduced to match
 
   # === Anti-Collapse Settings ===
-  w_mag_reg: 0.2                        # Strong magnitude regularization (was 0.01)
-  min_flow_mag: 1.0                     # Minimum expected flow magnitude (pixels)
-  use_photo_gradient: true              # Use image diff as flow prior
+  w_mag_reg: 0.05                       # Reduced from 0.2 to prevent NaN gradients
+  min_flow_mag: 0.5                     # Reduced target (was 1.0)
+  use_photo_gradient: false             # Disable photo gradient prior to reduce complexity
   
   # === Warmup Period ===
-  warmup_steps: 2000                    # Steps before enabling occ mask
+  warmup_steps: 1000                    # Reduced from 2000
   disable_occ_during_warmup: true       # Disable occlusion masking during warmup
 
   # === Disable Segment Losses ===
