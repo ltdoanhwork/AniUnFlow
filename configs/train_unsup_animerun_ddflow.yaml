@@ -5,7 +5,7 @@ data:
     name: "AnimeRun"
     root: "data/AnimeRun_v2"
     list_file: "data/AnimeRun_v2/train.txt"
-    batch_size: 4
+    batch_size: 8
     num_workers: 4
     clip_len: 3
     crop_size: [384, 768] # Must be div by 64 for PWC/DDFlow

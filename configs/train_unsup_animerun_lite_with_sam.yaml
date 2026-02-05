@@ -1,0 +1,162 @@
+# Lightweight Unsupervised Training Configuration (No SAM)
+# ========================================================
+# Optimized for speed and baseline comparison.
+# - No SAM-2 / Segment Guidance
+# - Reduced Model Size (Tiny variant)
+# - Standard Unsupervised Losses
+
+seed: 1337
+workspace: outputs/animerun_unsup_lite
+
+debug:
+  detect_anomaly: false
+  profile: false
+
+# ========================= Data =========================
+data:
+  name: animerun_clip
+  train_root: data/AnimeRun_v2/
+  val_root: data/AnimeRun_v2/
+  img_exts: [".png", ".jpg", ".jpeg"]
+
+  # Clip sampling
+  T: 3                                  # Reduced temporal window (was 5)
+  stride_min: 1
+  stride_max: 2
+
+  resize: true
+  keep_aspect: true
+  pad_mode: reflect
+  crop_size: [368, 768]
+
+  # Augmentations (Standard)
+  color_jitter: [0.3, 0.3, 0.3, 0.1]
+  do_flip: true
+  grayscale_p: 0.1
+
+  # Loader
+  batch_size: 4                         # Reduced due to concurrent GPU processes
+  num_workers: 4
+  drop_last: true
+  shuffle: true
+
+  # No SAM masks needed
+  load_sam_masks: true
+  sam_mask_dir: data/AnimeRun_v2/SAM_Masks
+  generate_sam_masks: false
+
+# ========================= Model =========================
+model:
+  name: AniFlowFormerT
+  args:
+    # Reduced Model Dimensions for "Lite" version
+    enc_channels: 32                    # Reduced from 64
+    token_dim: 128                      # Reduced from 192
+    lcm_depth: 4                        # Reduced from 6
+    lcm_heads: 4
+    gtr_depth: 1                        # Reduced from 2
+    gtr_heads: 4
+    iters_per_level: 3                  # Reduced from 4
+    
+    # SAM-2 Integration: DISABLED
+    use_sam: true
+    use_segment_cost_modulation: true
+    use_segment_attention_mask: true
+    use_segment_refinement: true
+
+# ========================= SAM-2 Configuration =========================
+sam:
+  enabled: true                        # Strictly disabled
+
+# ========================= Optimization =========================
+optim:
+  # Standard OneCycle for baseline
+  lr: 2.0e-4                            # Slightly higher for smaller model
+  weight_decay: 1.0e-4
+  betas: [0.9, 0.999]
+  
+  epochs: 100
+  warmup_epochs: 5
+  
+  clip: 1.0
+  accum_steps: 1
+
+  scheduler:
+    type: onecycle
+    max_lr: 2.0e-4
+    pct_start: 0.05
+    anneal_strategy: linear
+    cycle_momentum: false
+    div_factor: 25.0
+    final_div_factor: 10000.0
+
+# ========================= Loss Configuration =========================
+loss:
+  # === Baseline Unsupervised Losses Only ===
+  w_photo: 1.0
+  alpha_ssim: 0.85                      # Keep high SSIM
+  w_smooth: 0.02                        # Further reduced (was 0.05) to prevent collapse
+  w_cons: 0.02                          # Reduced to match
+
+  # === Anti-Collapse Settings ===
+  w_mag_reg: 0.05                       # Reduced from 0.2 to prevent NaN gradients
+  min_flow_mag: 0.5                     # Reduced target (was 1.0)
+  use_photo_gradient: false             # Disable photo gradient prior to reduce complexity
+  
+  # === Warmup Period ===
+  warmup_steps: 1000                    # Reduced from 2000
+  disable_occ_during_warmup: true       # Disable occlusion masking during warmup
+
+  # === Disable Segment Losses ===
+  segment_consistency:
+    enabled: false
+    weight: 0.0
+
+  boundary_aware_smooth:
+    enabled: false
+    weight: 0.0
+
+  temporal_memory:
+    enabled: false
+    weight: 0.0
+
+  w_epe_sup: 0.0
+
+# ========================= Validation =========================
+validation:
+  every_n_epochs: 5
+  
+  # Standard metrics
+  metrics:
+    - epe
+    - epe_occ
+    - epe_nonocc
+    - 1px
+    - 3px
+    - 5px
+
+# ========================= Checkpointing =========================
+ckpt:
+  save_every: 10
+  keep_last: 2
+  save_best: true
+
+# ========================= Logging =========================
+logging:
+  use_tb: true
+  tb_dir: tb_animerun_lite
+  log_every: 50
+  
+  log_flow_stats: true
+  log_segment_stats: true              # No segments
+  log_occlusion_ratio: true
+  log_individual_losses: true
+
+viz:
+  enable: true
+  max_samples: 8
+  save_dir: val_vis_lite
+  save_flow_png: true
+
+distributed:
+  enabled: false

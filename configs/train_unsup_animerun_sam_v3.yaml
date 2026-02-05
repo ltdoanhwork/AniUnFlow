@@ -1,0 +1,199 @@
+# Global Matching V3: Full SAM Integration
+# =========================================
+# Based on SAMFlow (AAAI 2024) and UnSAMFlow (CVPR 2024)
+#
+# New features:
+# - SAMGuidanceAdapterV3: 4 modes (feature concat, attention bias, cost modulation, object pooling)
+# - SAMGuidedGlobalMatcher: Boundary-aware matching
+# - LatentCostMemoryV3: Segment cross-attention
+# - V3 Losses: Homography smoothness (UnSAMFlow), boundary sharpness
+
+seed: 1337
+workspace: workspaces/global_matching_v3
+
+debug:
+  detect_anomaly: false
+  profile: false
+
+# ========================= Data =========================
+data:
+  name: animerun_clip
+  train_root: data/AnimeRun_v2/
+  val_root: data/AnimeRun_v2/
+  img_exts: [".png", ".jpg", ".jpeg"]
+
+  # Clip sampling
+  T: 3
+  stride_min: 1
+  stride_max: 2
+
+  # Resize/pad
+  resize: true
+  keep_aspect: true
+  pad_mode: reflect
+  crop_size: [368, 768]
+
+  # Augmentation
+  color_jitter: [0.4, 0.4, 0.4, 0.15]
+  do_flip: true
+  grayscale_p: 0.15
+
+  # Loader
+  batch_size: 4
+  num_workers: 4
+  drop_last: true
+  shuffle: true
+
+  # SAM masks
+  load_sam_masks: true
+  sam_mask_dir: data/AnimeRun_v2/SAM_Masks
+  generate_sam_masks: false
+
+# ========================= Model =========================
+model:
+  name: AniFlowFormerTV3  # V3 model class
+  args:
+    # Architecture (same as V1 lite)
+    enc_channels: 32
+    token_dim: 128
+    lcm_depth: 4
+    lcm_heads: 4
+    gtr_depth: 1
+    gtr_heads: 4
+    iters_per_level: 3
+    
+    # SAM Integration
+    use_sam: true
+    sam_version: 3
+    
+    # V3-specific options
+    num_segments: 16
+
+# ========================= SAM Guidance V3 =========================
+sam_guidance:
+  # Mode 1: Feature Concatenation (SAMFlow style)
+  feature_concat: true
+  
+  # Mode 2: Attention Bias Generation
+  attention_bias: true
+  
+  # Mode 3: Cost Modulation at boundaries
+  cost_modulation: true
+  
+  # Mode 4: Object-level pooling for segment tokens
+  object_pooling: true
+
+# ========================= SAM-2 Configuration =========================
+sam:
+  enabled: true
+  checkpoint: models/sam2/checkpoints/sam2.1_hiera_tiny.pt
+  model_type: configs/sam2.1/sam2.1_hiera_t.yaml
+  num_segments: 16
+  use_amg: true
+  cache_masks: false
+
+# ========================= Optimization =========================
+optim:
+  lr: 1.5e-4
+  weight_decay: 1.0e-4
+  betas: [0.9, 0.999]
+  
+  epochs: 100
+  warmup_epochs: 8
+  
+  clip: 1.0
+  accum_steps: 1
+
+  scheduler:
+    type: onecycle
+    max_lr: 1.5e-4
+    pct_start: 0.08
+    anneal_strategy: linear
+    cycle_momentum: false
+    div_factor: 25.0
+    final_div_factor: 10000.0
+
+# ========================= Loss Configuration =========================
+loss:
+  # === Base Unsupervised Losses ===
+  w_photo: 1.0
+  alpha_ssim: 0.85
+  w_smooth: 0.02
+  w_cons: 0.02
+
+  # === Anti-Collapse ===
+  w_mag_reg: 0.05
+  min_flow_mag: 0.5
+  warmup_steps: 1000
+  disable_occ_during_warmup: true
+
+  # === V3 Enhanced Losses (UnSAMFlow-style) ===
+  homography_smooth:
+    enabled: true
+    weight: 0.1
+
+  segment_motion_consistency:
+    enabled: true
+    weight: 0.05
+
+  boundary_sharpness:
+    enabled: true
+    weight: 0.05
+
+  cross_segment_discontinuity:
+    enabled: false  # Optional, can cause instability
+    weight: 0.02
+
+  # === V2 Segment Losses (also enabled) ===
+  segment_consistency:
+    enabled: true
+    weight: 0.03
+
+  boundary_aware_smooth:
+    enabled: true
+    weight: 0.08
+    boundary_suppress: 0.05
+
+  temporal_memory:
+    enabled: false
+    weight: 0.05
+
+  w_epe_sup: 0.0
+
+# ========================= Validation =========================
+validation:
+  every_n_epochs: 5
+  
+  metrics:
+    - epe
+    - epe_occ
+    - epe_nonocc
+    - 1px
+    - 3px
+    - 5px
+
+# ========================= Checkpointing =========================
+ckpt:
+  save_every: 10
+  keep_last: 3
+  save_best: true
+
+# ========================= Logging =========================
+logging:
+  use_tb: true
+  tb_dir: tb_global_matching_v3
+  log_every: 50
+  
+  log_flow_stats: true
+  log_segment_stats: true
+  log_occlusion_ratio: true
+  log_individual_losses: true
+
+viz:
+  enable: true
+  max_samples: 4
+  save_dir: val_vis_v3
+  save_flow_png: true
+
+distributed:
+  enabled: false
