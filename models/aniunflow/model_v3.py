@@ -206,17 +206,21 @@ class AniFlowFormerTV3(nn.Module):
                 feats_levels[1] = sam_outputs['enhanced_features']
         
         # === 3. Global Matching with SAM guidance ===
+        # Note: Only pass boundary_maps to tokenizer (resized per level)
+        # attn_biases are used only for LCM
         tokens = self.tokenizer(
             feats_levels,
             boundary_maps=boundary_maps,
-            attn_biases=attn_biases,
+            attn_biases=None,  # Disabled - resolution mismatch
         )
         
         # === 4. Latent Cost Memory with segment cross-attention ===
+        # Note: attn_bias disabled due to resolution mismatch between levels
+        # Segment cross-attention still works via seg_tokens
         latent = self.lcm(
             tokens,
             seg_tokens=seg_tokens,
-            attn_bias=attn_biases,
+            attn_bias=None,  # Disabled - resolution varies per level
         )
         
         # === 5. Global Temporal Regressor ===

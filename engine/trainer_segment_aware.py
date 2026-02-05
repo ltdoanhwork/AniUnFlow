@@ -239,7 +239,40 @@ class SegmentAwareTrainer:
         """Build AniFlowFormer-T model from config."""
         mcfg = self.cfg.get("model", {})
         args = mcfg.get("args", {})
-        return AniFlowFormerT(AFConfig(**args))
+        
+        # Check if V3 model should be used
+        sam_version = args.pop("sam_version", None)  # Remove from args to avoid V1 error
+        model_name = mcfg.get("name", "AniFlowFormerT")
+        
+        if sam_version == 3 or model_name == "AniFlowFormerTV3":
+            # Use V3 model
+            from models.aniunflow.model_v3 import AniFlowFormerTV3, ModelConfigV3
+            
+            # Map config args to V3 config
+            sam_guidance_cfg = self.cfg.get("sam_guidance", {})
+            sam_cfg = self.cfg.get("sam", {})
+            
+            v3_config = ModelConfigV3(
+                enc_channels=args.get("enc_channels", 64),
+                token_dim=args.get("token_dim", 192),
+                lcm_depth=args.get("lcm_depth", 6),
+                lcm_heads=args.get("lcm_heads", 4),
+                gtr_depth=args.get("gtr_depth", 2),
+                gtr_heads=args.get("gtr_heads", 4),
+                iters_per_level=args.get("iters_per_level", 4),
+                use_sam=args.get("use_sam", True),
+                sam_version=3,
+                use_feature_concat=sam_guidance_cfg.get("feature_concat", True),
+                use_attention_bias=sam_guidance_cfg.get("attention_bias", True),
+                use_cost_modulation=sam_guidance_cfg.get("cost_modulation", True),
+                use_object_pooling=sam_guidance_cfg.get("object_pooling", True),
+                num_segments=sam_cfg.get("num_segments", args.get("num_segments", 16)),
+            )
+            print("[Trainer] Using AniFlowFormerTV3 with SAM guidance")
+            return AniFlowFormerTV3(v3_config)
+        else:
+            # Use V1/V2 model
+            return AniFlowFormerT(AFConfig(**args))
     
     def _has_segment_losses(self) -> bool:
         """Check if any segment-aware losses are enabled."""

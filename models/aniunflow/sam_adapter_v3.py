@@ -114,8 +114,8 @@ class SegmentTokenEncoder(nn.Module):
         
         # Weighted sum: (B, S, C, H, W) -> sum over H, W -> (B, S, C)
         weighted = (masks_exp * feats_exp).sum(dim=(-2, -1))  # (B, S, C)
-        mask_sum = masks.sum(dim=(-2, -1), keepdim=True).clamp(min=1e-6)  # (B, S, 1)
-        pooled = weighted / mask_sum  # (B, S, C)
+        mask_sum = masks.sum(dim=(-2, -1)).unsqueeze(-1).clamp(min=1e-6)  # (B, S) -> (B, S, 1)
+        pooled = weighted / mask_sum  # (B, S, C) / (B, S, 1) = (B, S, C)
         
         # Project to token dimension
         seg_tokens = self.proj(pooled)  # (B, S, token_dim)
