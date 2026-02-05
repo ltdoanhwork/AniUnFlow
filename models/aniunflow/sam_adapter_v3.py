@@ -39,6 +39,9 @@ def compute_boundary_map(masks: torch.Tensor, kernel_size: int = 3) -> torch.Ten
     B, S, H, W = masks.shape
     padding = kernel_size // 2
     
+    # Ensure float dtype for pooling operations
+    masks = masks.float()
+    
     # Combine boundaries from all segments
     boundary = torch.zeros(B, 1, H, W, device=masks.device, dtype=masks.dtype)
     
@@ -388,7 +391,7 @@ class SAMGuidanceAdapterV3(nn.Module):
         # Compute edge map (legacy compatibility with V2)
         edge_maps = []
         for t in range(T):
-            m_sum = masks[:, t].sum(dim=1, keepdim=True)  # (B, 1, H, W)
+            m_sum = masks[:, t].float().sum(dim=1, keepdim=True)  # (B, 1, H, W)
             edge = (m_sum - F.max_pool2d(m_sum, 3, 1, 1)).abs() > 0
             edge_maps.append(edge.float())
         outputs['edge_maps'] = torch.stack(edge_maps, dim=1)
