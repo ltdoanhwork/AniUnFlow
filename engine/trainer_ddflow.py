@@ -232,12 +232,60 @@ class DDFlowTrainer:
         self.writer = SummaryWriter(str(tb_dir))
         self.val_every_epochs = cfg.get("validation", {}).get("every_n_epochs", 5)
 
-    def fit(self, train_loader, val_loader=None):
+    def save_checkpoint(self, epoch, is_best=False):
+        state = {
+            "epoch": epoch,
+            "global_step": self.global_step,
+            "model": self.model.state_dict(),
+            "optimizer": self.optimizer.state_dict(),
+            "scaler": self.scaler.state_dict(),
+            "best_metric": self.best_metric,
+        }
+        
+        # Save regular checkpoint
+        torch.save(state, self.workspace / f"ckpt_ddflow_e{epoch:03d}.pth")
+        
+        # Save best
+        if is_best:
+            torch.save(state, self.workspace / "best_ddflow.pth")
+            
+    def load_checkpoint(self, ckpt_path):
+        print(f"Resuming from {ckpt_path}...")
+        checkpoint = torch.load(ckpt_path, map_location=self.device)
+        
+        # Check if it's a full checkpoint or just model weights (legacy)
+        if "model" in checkpoint:
+            self.model.load_state_dict(checkpoint["model"])
+            self.optimizer.load_state_dict(checkpoint["optimizer"])
+            self.scaler.load_state_dict(checkpoint["scaler"])
+            self.current_epoch = checkpoint["epoch"]
+            self.global_step = checkpoint["global_step"]
+            self.best_metric = checkpoint.get("best_metric", float("inf"))
+            print(f"Resumed full state from epoch {self.current_epoch}")
+        else:
+            self.model.load_state_dict(checkpoint)
+            print("Resumed model weights only (legacy checkpoint). Optimizer restarted.")
+            # Try to infer epoch from filename
+            import re
+            match = re.search(r'e(\d+)', Path(ckpt_path).name)
+            if match:
+                self.current_epoch = int(match.group(1))
+                print(f"Inferred epoch {self.current_epoch} from filename")
+
+    def fit(self, train_loader, val_loader=None, resume_path=None):
+        if resume_path:
+            self.load_checkpoint(resume_path)
+            
+        start_epoch = self.current_epoch + 1
         epochs = int(self.cfg.get("optim", {}).get("epochs", 50))
-        for epoch in range(1, epochs + 1):
+        
+        print(f"Starting training from epoch {start_epoch} to {epochs}")
+        
+        for epoch in range(start_epoch, epochs + 1):
             self.current_epoch = epoch
             self._train_one_epoch(train_loader)
             
+            # Validation
             if val_loader and epoch % self.val_every_epochs == 0:
                 metrics = self.validate(val_loader, epoch=epoch)
                 # Log metrics
@@ -246,12 +294,15 @@ class DDFlowTrainer:
                         self.writer.add_scalar(f"val/{k}", v, epoch)
                         
                 val_epe = metrics.get("epe", float("inf"))
-                if val_epe < self.best_metric:
+                is_best = val_epe < self.best_metric
+                if is_best:
                     self.best_metric = val_epe
-                    torch.save(self.model.state_dict(), self.workspace / "best_ddflow.pth")
+            else:
+                is_best = False
             
-            if epoch % 5 == 0:
-                torch.save(self.model.state_dict(), self.workspace / f"ckpt_ddflow_e{epoch:03d}.pth")
+            # Save checkpoint
+            if epoch % 5 == 0 or is_best:
+                 self.save_checkpoint(epoch, is_best)
 
     def _train_one_epoch(self, loader):
         self.model.train()
@@ -330,7 +381,24 @@ class DDFlowTrainer:
             batch = _to_device(batch, self.device)
             clip = batch["clip"]
             if clip.dtype == torch.uint8: clip = clip.float() / 255.0
+            if clip.dtype == torch.uint8: clip = clip.float() / 255.0
+            
+            # Dataset returns "flow_list" for sequences, not "flow"
             gt = batch.get("flow", None)
+            if gt is None and "flow_list" in batch:
+                # flow_list is a list of tensors for consecutive pairs: [flow_01, flow_12...]. 
+                # We validate on the first pair (0->1).
+                # Depending on collate_fn, flow_list might be a list of batched tensors 
+                # or a stacked tensor if custom collate isn't used. 
+                # Default collate converts list of lists -> list of stacked tensors.
+                flows = batch["flow_list"]
+                if isinstance(flows, list) and len(flows) > 0:
+                    gt = flows[0] # [B, 2, H, W]
+                elif isinstance(flows, torch.Tensor):
+                    gt = flows[:, 0] # if stacked [B, T-1, 2, H, W]
+            
+            if gt is not None:
+                gt = gt.to(self.device, non_blocking=True)
             
             imgs = torch.cat([clip[:, 0], clip[:, 1]], dim=1)
             # Eval mode DDFlowNet returns full_res flow

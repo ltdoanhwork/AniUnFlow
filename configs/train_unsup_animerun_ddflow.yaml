@@ -28,7 +28,7 @@ loss:
 optim:
   lr: 2.0e-4
   weight_decay: 1.0e-4
-  epochs: 50
+  epochs: 100
   accum_steps: 1
   clip: 1.0
 

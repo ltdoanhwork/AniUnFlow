@@ -41,12 +41,27 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, required=True)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--resume", type=str, nargs='?', const='latest', help="Resume from checkpoint path or 'latest'")
     args = parser.parse_args()
     
     with open(args.config) as f:
         cfg = yaml.safe_load(f)
         
     trainer = DDFlowTrainer(cfg, workspace=Path(cfg["workspace"]))
+    
+    resume_path = None
+    if args.resume:
+        if args.resume == 'latest':
+            # Find latest checkpoint
+            ws = Path(cfg["workspace"])
+            ckpts = sorted(list(ws.glob("ckpt_ddflow_e*.pth")))
+            if ckpts:
+                resume_path = ckpts[-1]
+                print(f"Auto-resuming from latest: {resume_path}")
+            else:
+                print("No checkpoint found to resume from.")
+        else:
+            resume_path = args.resume
     
     if args.dry_run:
         print("Dry run: Checking dataset...")
@@ -81,7 +96,7 @@ def main():
     train_loader = build_loader(train_ds, cfg["data"]["train"])
     val_loader = build_loader(val_ds, cfg["data"]["val"])
     
-    trainer.fit(train_loader, val_loader)
+    trainer.fit(train_loader, val_loader, resume_path=resume_path)
 
 if __name__ == "__main__":
     main()
