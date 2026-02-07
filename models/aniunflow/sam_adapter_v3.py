@@ -330,6 +330,48 @@ class SAMGuidanceAdapterV3(nn.Module):
         B, T, S, H, W = masks.shape
         outputs = {}
         
+        # Determine if input is integer label map (S=1) or multi-channel masks
+        # If dataset returns (B, T, 1, H, W) labels, we expand to (B, T, S, H, W) one-hot
+        if masks.shape[2] == 1 and self.num_segments > 1:
+            # Expand label map to one-hot masks
+            # masks: (B, T, 1, H, W)
+            labels = masks[:, :, 0].long()  # (B, T, H, W)
+            
+            # One-hot encoding
+            # 0 is background (ignored or handled as separate segment?)
+            # Usually segments are 1..S. We map 0->0 (no segment) or ignore?
+            # Let's assume indices 1..S map to masks 0..S-1.
+            # Or if indices are 0..S-1, we map directly.
+            # Dataset returns 0=background, 1..S=segments.
+            
+            # We want output (B, T, S, H, W)
+            # Create zeros
+            one_hot = torch.zeros(B, T, self.num_segments, H, W, device=masks.device, dtype=torch.float32)
+            
+            # Scatter 1.0 where labels match
+            # We handle segments 1 to num_segments
+            # valid mask: labels > 0
+            
+            # Faster way: scatter_
+            src = torch.ones_like(labels, dtype=torch.float32).unsqueeze(2) # (B, T, 1, H, W)
+            
+            # Adjust labels to 0-indexed for scatter, filtering out background (0)
+            target_indices = labels.unsqueeze(2) - 1 # (B, T, 1, H, W), 0->-1, 1->0
+            
+            # Only scatter valid indices (>=0)
+            valid = target_indices >= 0
+            if valid.any():
+                # We need to clamp to [0, S-1] to avoid error, then mask out invalid
+                # But scatter doesn't support mask easily.
+                # Loop is safer for ensuring correctness with valid mask check
+                for s in range(self.num_segments):
+                    # Segment ID s+1 matches this channel
+                    one_hot[:, :, s] = (labels == (s + 1)).float()
+            
+            masks = one_hot
+            # Update shape vars
+            B, T, S, H, W = masks.shape
+            
         # Compute boundary maps for all frames
         boundary_maps = []
         for t in range(T):

@@ -368,7 +368,7 @@ class SAM2GuidanceModule(nn.Module):
         Compute boundary maps from segment masks.
         
         Args:
-            segment_masks: Segment masks (B, T, S, H, W)
+            segment_masks: Segment masks (B, T, S, H, W) or Label maps (B, T, 1, H, W)
             kernel_size: Morphological kernel size
         
         Returns:
@@ -376,6 +376,32 @@ class SAM2GuidanceModule(nn.Module):
         """
         B, T, S, H, W = segment_masks.shape
         
+        # Handle integer label maps (S=1)
+        if S == 1:
+            # Input is (B, T, 1, H, W) integer labels
+            # Gradient-based boundary detection on labels
+            # Boundary = pixel where neighbors have different labels
+            
+            # Simple morphological gradient on labels doesn't work directly (e.g. 1 -> 2 is diff 1, 1 -> 5 is diff 4)
+            # Instead, we check if max_pool != min_pool in local window
+            
+            padding = kernel_size // 2
+            labels = segment_masks.float()  # (B, T, 1, H, W)
+            
+            # Reshape to (B*T, 1, H, W) for 2D pooling
+            labels_flat = labels.view(-1, 1, H, W)
+            
+            # Max filter
+            dilated = F.max_pool2d(labels_flat, kernel_size, stride=1, padding=padding)
+            # Min filter (using max_pool of negative)
+            eroded = -F.max_pool2d(-labels_flat, kernel_size, stride=1, padding=padding)
+            
+            # Boundary where max != min
+            boundary = (dilated != eroded).float()
+            
+            # Reshape back
+            return boundary.view(B, T, 1, H, W)
+
         all_boundaries = []
         for t in range(T):
             masks_t = segment_masks[:, t]  # (B, S, H, W)

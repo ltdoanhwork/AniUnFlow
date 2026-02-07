@@ -384,9 +384,17 @@ class SegmentAwareTrainer:
             segment_masks = None
             boundary_maps = None
             if self.use_sam and self.sam_guidance is not None:
-                with torch.no_grad():
-                    segment_masks = self.sam_guidance.extract_segment_masks(clip)
-                    boundary_maps = self.sam_guidance.compute_boundary_maps(segment_masks)
+                # Use pre-loaded masks if available (faster)
+                if "sam_masks" in batch:
+                    segment_masks = batch["sam_masks"]
+                    # Calculate boundary maps from pre-loaded masks
+                    with torch.no_grad():
+                         boundary_maps = self.sam_guidance.compute_boundary_maps(segment_masks)
+                else:
+                    # Fallback to online generation (slower)
+                    with torch.no_grad():
+                        segment_masks = self.sam_guidance.extract_segment_masks(clip)
+                        boundary_maps = self.sam_guidance.compute_boundary_maps(segment_masks)
             
             with torch.cuda.amp.autocast(enabled=torch.cuda.is_available()):
                 # Forward pass
