@@ -447,7 +447,7 @@ class SegmentAwareTrainer:
                         use_occ_mask = False
                         
                     loss_dict = self.base_loss.unsup_bidirectional(clip, flows_fw, flows_bw, use_occ_mask=use_occ_mask)
-                    total_loss = loss_dict["loss"]
+                    total_loss = loss_dict["total"]
                     
                     # Add SAM losses from model output
                     if "sam_losses" in out_fw:

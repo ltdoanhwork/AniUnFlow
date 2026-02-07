@@ -1,0 +1,11 @@
+/home/serverai/ltdoanh/AniUnFlow/models/aniunflow/model.py:53: FutureWarning: `torch.cuda.amp.autocast(args...)` is deprecated. Please use `torch.amp.autocast('cuda', args...)` instead.
+  @torch.cuda.amp.autocast(enabled=True)
+=== Debug V4 Training Loop ===
+Traceback (most recent call last):
+  File "/home/serverai/ltdoanh/AniUnFlow/scripts/debug_v4_train.py", line 85, in <module>
+    main()
+    ~~~~^^
+  File "/home/serverai/ltdoanh/AniUnFlow/scripts/debug_v4_train.py", line 31, in main
+    cfg.sam_cfg.use_encoder_features = True
+    ^^^^^^^^^^^
+AttributeError: 'V4Config' object has no attribute 'sam_cfg'

@@ -337,29 +337,47 @@ class SegmentAwareLossModule(nn.Module):
     def __init__(self, cfg: Dict):
         super().__init__()
         
+        # Helper to handle both V4 (flat float) and V1/V3 (nested dict) configs
+        def parse_loss_config(key, default_weight=0.0):
+            value = cfg.get(key, {})
+            # V4 style: direct float value
+            if isinstance(value, (int, float)):
+                return {'enabled': value > 0, 'weight': value}
+            # V1/V3 style: nested dict
+            elif isinstance(value, dict):
+                return {
+                    'enabled': value.get('enabled', True),
+                    'weight': value.get('weight', default_weight)
+                }
+            else:
+                return {'enabled': False, 'weight': default_weight}
+        
         # Segment Consistency Loss
-        seg_cons_cfg = cfg.get('segment_consistency', {})
-        self.use_segment_consistency = seg_cons_cfg.get('enabled', True)
+        seg_cons = parse_loss_config('segment_consistency', 0.1)
+        self.use_segment_consistency = seg_cons['enabled']
         if self.use_segment_consistency:
             self.segment_consistency = SegmentConsistencyFlowLoss(
-                weight=seg_cons_cfg.get('weight', 0.1),
+                weight=seg_cons['weight'],
             )
         
         # Boundary-Aware Smoothness Loss
-        boundary_cfg = cfg.get('boundary_aware_smooth', {})
-        self.use_boundary_smooth = boundary_cfg.get('enabled', True)
+        boundary = parse_loss_config('boundary_aware_smooth', 0.15)
+        self.use_boundary_smooth = boundary['enabled']
         if self.use_boundary_smooth:
+            # Get boundary_suppress from original config if dict
+            boundary_cfg = cfg.get('boundary_aware_smooth', {})
+            boundary_suppress = boundary_cfg.get('boundary_suppress', 0.1) if isinstance(boundary_cfg, dict) else 0.1
             self.boundary_smooth = BoundaryAwareSmoothnessLoss(
-                weight=boundary_cfg.get('weight', 0.15),
-                boundary_suppress=boundary_cfg.get('boundary_suppress', 0.1),
+                weight=boundary['weight'],
+                boundary_suppress=boundary_suppress,
             )
         
         # Temporal Memory Regularization
-        temp_cfg = cfg.get('temporal_memory', {})
-        self.use_temporal = temp_cfg.get('enabled', False)
+        temp = parse_loss_config('temporal_memory', 0.05)
+        self.use_temporal = temp['enabled']
         if self.use_temporal:
             self.temporal_reg = TemporalMemoryRegularization(
-                weight=temp_cfg.get('weight', 0.05),
+                weight=temp['weight'],
             )
     
     def forward(

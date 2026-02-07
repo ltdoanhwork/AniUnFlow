@@ -25,8 +25,10 @@ def collate_fn(batch):
 def main():
     print("=== Debug V4 Training Loop ===")
     
-    # Setup config (masks only for speed, no SAM encoder needed for debug)
+    # Setup config
     cfg = get_masks_only_config()
+    # Force enable encoder features to test fallback logic
+    # cfg.sam.use_encoder_features = True
     
     # Tiny dataset settings for debug
     cfg.data = {
@@ -54,15 +56,15 @@ def main():
     print("Creating DataLoader...")
     dataset = UnlabeledClipDataset(
         root=cfg.data["train_root"],
-        split="train",
-        clip_len=cfg.data["T"],
+        is_test=False,
+        T=cfg.data["T"],
         load_sam_masks=True,
         sam_mask_root=cfg.data["sam_mask_dir"]
     )
     
     # Take subset for speed
     dataset.train_seqs = dataset.train_seqs[:2]
-    dataset.samples = dataset.samples[:4]
+    dataset.index = dataset.index[:4]
     
     loader = DataLoader(
         dataset, 
