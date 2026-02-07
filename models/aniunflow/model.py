@@ -50,7 +50,7 @@ class AniFlowFormerT(nn.Module):
         self.sam_adapter = SamGuidanceAdapter(feat_dim=c*2, token_dim=cfg.token_dim)
         self.ssim = SSIM()
 
-    @torch.cuda.amp.autocast(enabled=True)
+    @torch.amp.autocast('cuda', enabled=True)
     def forward(self, clip: torch.Tensor, sam_masks: Optional[torch.Tensor] = None, use_sam: Optional[bool] = None) -> Dict[str, List[torch.Tensor]]:
         """clip: BxTx3xHxW (T>=3)
         Returns dict with flows (list of Bx2xH4xW4 for consecutive pairs) and optional occ logits.

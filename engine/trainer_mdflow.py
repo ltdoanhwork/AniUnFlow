@@ -249,7 +249,7 @@ class MDFlowTrainer:
         self.scheduler = None
         self.sched_per_batch = False
         
-        self.scaler = torch.cuda.amp.GradScaler(enabled=torch.cuda.is_available())
+        self.scaler = torch.amp.GradScaler('cuda', enabled=torch.cuda.is_available())
         self.clip_grad = float(optim_cfg.get("clip", 1.0))
         self.accum_steps = int(optim_cfg.get("accum_steps", 1))
         
@@ -324,6 +324,12 @@ class MDFlowTrainer:
             if epoch % ckpt_cfg.get("save_every", 5) == 0:
                 self._save_checkpoint(f"ckpt_mdflow_e{epoch:03d}.pth")
 
+            # Debug: Max steps check
+            max_steps = self.cfg.get("debug", {}).get("max_steps", 0)
+            if max_steps > 0 and self.global_step >= max_steps:
+               print(f"[DEBUG] Training stopped (max_steps={max_steps}).")
+               break
+
     def _train_one_epoch(self, train_loader: DataLoader):
         self.model.train()
         self.optimizer.zero_grad(set_to_none=True)
@@ -340,7 +346,7 @@ class MDFlowTrainer:
             # Use Pair 1: frame 0 -> frame 1
             # Concatenate for FastFlowNet [B, 6, H, W]
             
-            with torch.cuda.amp.autocast(enabled=torch.cuda.is_available()):
+            with torch.amp.autocast('cuda', enabled=torch.cuda.is_available()):
                 # Forward Image Pair
                 img1 = clip[:, 0]
                 img2 = clip[:, 1]
@@ -396,8 +402,15 @@ class MDFlowTrainer:
             self.global_step += 1
             pbar.set_postfix({"loss": f"{total_loss.item():.4f}"})
             
+
             if self.writer and self.global_step % self.log_every == 0:
                 self._log_step(clip, flows_fw, loss_dict)
+            
+            # Debug: Max steps
+            max_steps = self.cfg.get("debug", {}).get("max_steps", 0)
+            if max_steps > 0 and self.global_step >= max_steps:
+                print(f"[DEBUG] Reached max_steps ({max_steps}). Stopping epoch.")
+                break
                 
     def _log_step(self, clip, flows, loss_dict):
         step = self.global_step
@@ -424,7 +437,12 @@ class MDFlowTrainer:
         total_samples = 0
         p1_cnt = p3_cnt = p5_cnt = 0
         
-        for batch in tqdm(val_loader, desc="Validate"):
+        for i, batch in enumerate(tqdm(val_loader, desc="Validate")):
+            max_val = self.cfg.get("debug", {}).get("max_val_steps", 0)
+            if max_val > 0 and i >= max_val:
+                print(f"[DEBUG] Reached max_val_steps ({max_val}). Breaking validation.")
+                break
+            
             batch = _to_device(batch, self.device)
             clip = batch["clip"]
             if clip.dtype == torch.uint8:
