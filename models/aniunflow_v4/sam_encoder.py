@@ -7,6 +7,15 @@ import torch
 import torch.nn as nn
 from typing import Dict, List, Optional, Tuple
 from pathlib import Path
+import sys
+import os
+
+# Add SAM2 to python path
+FILE = Path(__file__).resolve()
+ROOT = FILE.parents[2]  # AniUnFlow root
+SAM2_ROOT = ROOT / "models" / "sam2"
+if str(SAM2_ROOT) not in sys.path:
+    sys.path.append(str(SAM2_ROOT))
 
 
 class SAMEncoderWrapper(nn.Module):
@@ -42,27 +51,21 @@ class SAMEncoderWrapper(nn.Module):
         if self._loaded:
             return
             
-        try:
-            from sam2.build_sam import build_sam2
-            
-            # Build SAM model
-            sam_model = build_sam2(self.config, self.checkpoint, device=self.device)
-            
-            # Extract image encoder
-            self._encoder = sam_model.image_encoder
-            
-            if self.freeze:
-                for param in self._encoder.parameters():
-                    param.requires_grad = False
-                self._encoder.eval()
-            
-            self._loaded = True
-            print(f"[SAMEncoder] Loaded from {self.checkpoint}")
-            
-        except Exception as e:
-            print(f"[SAMEncoder] Failed to load: {e}")
-            self._encoder = None
-            self._loaded = True
+        from sam2.build_sam import build_sam2
+        
+        # Build SAM model
+        sam_model = build_sam2(self.config, self.checkpoint, device=self.device)
+        
+        # Extract image encoder
+        self._encoder = sam_model.image_encoder
+        
+        if self.freeze:
+            for param in self._encoder.parameters():
+                param.requires_grad = False
+            self._encoder.eval()
+        
+        self._loaded = True
+        print(f"[SAMEncoder] Loaded from {self.checkpoint}")
     
     def forward(
         self,

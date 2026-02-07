@@ -92,13 +92,6 @@ class AniFlowFormerTV4(nn.Module):
         if self.sam_cfg.enabled:
             # SAM Encoder (frozen ViT features)
             if self.sam_cfg.use_encoder_features:
-                try:
-                    import sam2
-                except ImportError:
-                    print("[AniFlowFormerTV4] Warning: 'sam2' module not found. Disabling SAM encoder features.")
-                    self.sam_cfg.use_encoder_features = False
-
-            if self.sam_cfg.use_encoder_features:
                 self.sam_encoder = SAMEncoderWrapper(
                     checkpoint=self.sam_cfg.encoder_checkpoint,
                     config=self.sam_cfg.encoder_config,
