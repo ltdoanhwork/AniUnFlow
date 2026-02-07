@@ -65,4 +65,18 @@ models/
 ```
 
 
----
+66: 
+67: ## Global Matching V3 (New)
+68: 
+69: A significant upgrade introducing **SAM-2 structural guidance** for improved boundary handling and flat region consistency.
+70: 
+71: - **Documentation**: [docs/architecture_v3.md](docs/architecture_v3.md)
+72: - **Config**: `configs/train_unsup_animerun_sam_v3.yaml`
+73: - **Mask Precomputation**: `scripts/precompute_sam_masks.py`
+74: 
+75: ```bash
+76: # Train V3
+77: python scripts/train_unsup_animerun.py --config configs/train_unsup_animerun_sam_v3.yaml
+78: ```
+79: 
+80: ---
