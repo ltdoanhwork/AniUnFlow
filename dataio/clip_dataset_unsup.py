@@ -229,8 +229,18 @@ class UnlabeledClipDataset(Dataset):
             print(f"[Test] Found {len(self.test_seqs)} scenes under {frame_root}")
         else:
             frame_root = self.root / "train" / "Frame_Anime"
+            
+            # CRITICAL: When loading SAM masks, use 'original' subdir because:
+            # 1. Masks are precomputed for 'original/' only
+            # 2. 'original/' has different filenames (Image0186.png vs 0186.png in color_*)
+            if self.load_sam_masks and self.sam_mask_root:
+                subdir_glob = "original"  # Use original for SAM mask alignment
+                print("[Dataset] Using 'original' subdir for SAM mask alignment")
+            else:
+                subdir_glob = "color_*"
+            
             self.train_seqs = _scan_sequences_train(
-                frame_root, frame_subdir_glob="color_*", min_frames=3, merge_color_tracks=False
+                frame_root, frame_subdir_glob=subdir_glob, min_frames=3, merge_color_tracks=False
             )
             print(f"[Train] Found {len(self.train_seqs)} sequences under {frame_root}")
 
@@ -367,11 +377,20 @@ class UnlabeledClipDataset(Dataset):
                 # Robust way: find relative path from 'train/Frame_Anime' or 'test/Frame_Anime'
                 try:
                     # Find 'Frame_Anime' in path parts
-                    parts = frame_path.parts
+                    parts = list(frame_path.parts)
                     idx = parts.index('Frame_Anime')
                     # Include the parent (train/test) to match SAM_Masks structure on disk
                     # Frame_Anime is at idx, so train/test is at idx-1
-                    rel_parts = parts[max(0, idx-1):] 
+                    rel_parts = parts[max(0, idx-1):]
+                    
+                    # CRITICAL FIX: Masks are only generated for 'original' subdirectory
+                    # But training uses color_1, color_2, etc. Need to remap to 'original'
+                    # Structure: .../Scene/color_X/frame.png -> .../Scene/original/frame.pt
+                    for i, part in enumerate(rel_parts):
+                        if part.startswith('color_'):
+                            rel_parts[i] = 'original'
+                            break
+                    
                     rel_path = Path(*rel_parts)
                     mask_path = self.sam_mask_root / rel_path.parent / (frame_path.stem + ".pt")
                 except (ValueError, IndexError):

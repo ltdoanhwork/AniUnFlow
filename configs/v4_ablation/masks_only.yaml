@@ -1,0 +1,69 @@
+# V4 Ablation: Masks Only (No Encoder Features)
+# ==============================================
+
+seed: 1337
+workspace: workspaces/v4_ablation_masks_only
+
+data:
+  name: animerun_clip
+  train_root: data/AnimeRun_v2/
+  val_root: data/AnimeRun_v2/
+  T: 3
+  stride_min: 1
+  stride_max: 2
+  crop_size: [368, 768]
+  load_sam_masks: true
+  sam_mask_dir: data/AnimeRun_v2/SAM_Masks_v2
+  batch_size: 4
+  num_workers: 4
+
+model:
+  enc_channels: 32
+  enc_out_channels: 64
+  token_dim: 128
+  lcm_depth: 4
+  lcm_heads: 4
+  gtr_depth: 1
+  gtr_heads: 4
+  iters_per_level: 3
+
+sam:
+  enabled: true
+  use_encoder_features: false  # DISABLED
+  use_mask_guidance: true      # ENABLED
+  feature_concat: true
+  attention_bias: false
+  cost_modulation: false
+  object_pooling: false
+  num_segments: 32
+
+loss:
+  photo: 1.0
+  photo_ssim_alpha: 0.85
+  smooth: 0.02
+  consistency: 0.02
+  mag_reg: 0.05
+  min_flow_mag: 0.5
+  warmup_steps: 1000
+  # Mask-based losses only
+  homography_smooth: 0.15
+  boundary_sharpness: 0.05
+  object_variance: 0.08
+  segment_consistency: 0.03
+  boundary_aware_smooth: 0.08
+
+optim:
+  lr: 1.5e-4
+  weight_decay: 1.0e-4
+  epochs: 100
+  warmup_epochs: 8
+  clip: 1.0
+  scheduler:
+    type: onecycle
+    max_lr: 1.5e-4
+    pct_start: 0.08
+
+logging:
+  use_tb: true
+  tb_dir: tb_v4_masks_only
+  log_every: 50

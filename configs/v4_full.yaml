@@ -1,0 +1,107 @@
+# V4 Full SAM Integration Config
+# ================================
+# All SAM components enabled for maximum accuracy.
+
+seed: 1337
+workspace: workspaces/v4_full
+
+# ========================= Data =========================
+data:
+  name: animerun_clip
+  train_root: data/AnimeRun_v2/
+  val_root: data/AnimeRun_v2/
+  
+  T: 3
+  stride_min: 1
+  stride_max: 2
+  crop_size: [368, 768]
+  
+  # SAM masks (precomputed)
+  load_sam_masks: true
+  sam_mask_dir: data/AnimeRun_v2/SAM_Masks
+  
+  batch_size: 4
+  num_workers: 4
+
+# ========================= Model =========================
+model:
+  enc_channels: 32
+  enc_out_channels: 64
+  token_dim: 128
+  lcm_depth: 4
+  lcm_heads: 4
+  gtr_depth: 1
+  gtr_heads: 4
+  iters_per_level: 3
+
+# ========================= SAM Configuration =========================
+sam:
+  enabled: true
+  
+  # Component toggles (all enabled for full integration)
+  use_encoder_features: true
+  use_mask_guidance: true
+  
+  # Feature modes
+  feature_concat: true
+  attention_bias: true
+  cost_modulation: true
+  object_pooling: true
+  
+  # Encoder settings
+  encoder_checkpoint: models/sam2/checkpoints/sam2.1_hiera_base.pt
+  encoder_config: configs/sam2.1/sam2.1_hiera_b.yaml
+  encoder_freeze: true
+  feature_dim: 256
+  feature_scales: [8, 16]
+  
+  # Mask settings
+  num_segments: 32
+  mask_cache_dir: data/AnimeRun_v2/SAM_Masks_v2
+
+# ========================= Loss Configuration =========================
+loss:
+  # Base unsupervised
+  photo: 1.0
+  photo_ssim_alpha: 0.85
+  smooth: 0.02
+  consistency: 0.02
+  
+  # Anti-collapse
+  mag_reg: 0.05
+  min_flow_mag: 0.5
+  warmup_steps: 1000
+  
+  # SAM-guided losses (full integration)
+  homography_smooth: 0.15
+  boundary_sharpness: 0.05
+  object_variance: 0.08
+  segment_consistency: 0.03
+  boundary_aware_smooth: 0.08
+
+# ========================= Optimization =========================
+optim:
+  lr: 1.5e-4
+  weight_decay: 1.0e-4
+  epochs: 100
+  warmup_epochs: 8
+  clip: 1.0
+  
+  scheduler:
+    type: onecycle
+    max_lr: 1.5e-4
+    pct_start: 0.08
+
+# ========================= Logging =========================
+logging:
+  use_tb: true
+  tb_dir: tb_v4_full
+  log_every: 50
+
+validation:
+  every_n_epochs: 5
+
+ckpt:
+  save_every: 10
+  keep_last: 3
+  save_best: true

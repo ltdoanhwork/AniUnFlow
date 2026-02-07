@@ -27,9 +27,7 @@ import torchvision.utils as vutils
 from tqdm import tqdm
 
 # Model imports
-# Model imports
 from models import AniFlowFormerT, ModelConfig as AFConfig
-from models.aniunflow_v4.model import AniFlowFormerTV4, V4Config
 from models.aniunflow.losses import UnsupervisedFlowLoss as AFTLosses
 
 # Segment-aware imports
@@ -272,13 +270,6 @@ class SegmentAwareTrainer:
             )
             print("[Trainer] Using AniFlowFormerTV3 with SAM guidance")
             return AniFlowFormerTV3(v3_config)
-        elif self.cfg.get("sam", {}).get("use_encoder_features", False) or \
-             self.cfg.get("sam", {}).get("use_mask_guidance", False):
-            # V4 Model detection
-            from models.aniunflow_v4.model import AniFlowFormerTV4, V4Config
-            print("[Trainer] Initializing AniFlowFormerTV4...")
-            config = V4Config.from_dict(self.cfg)
-            return AniFlowFormerTV4(config)
         else:
             # Use V1/V2 model
             return AniFlowFormerT(AFConfig(**args))
@@ -286,28 +277,10 @@ class SegmentAwareTrainer:
     def _has_segment_losses(self) -> bool:
         """Check if any segment-aware losses are enabled."""
         loss_cfg = self.cfg.get("loss", {})
-        
-        # V4 Config support (flat structure)
-        if hasattr(loss_cfg, 'homography_smooth'):
-             return (loss_cfg.homography_smooth > 0 or 
-                     loss_cfg.boundary_sharpness > 0 or 
-                     loss_cfg.object_variance > 0 or
-                     loss_cfg.boundary_aware_smooth > 0)
-        
-        # V3/V1 Config support (nested dicts)
-        if isinstance(loss_cfg, dict):
-            seg_cons = loss_cfg.get("segment_consistency", {}).get("enabled", False) if isinstance(loss_cfg.get("segment_consistency"), dict) else False
-            boundary = loss_cfg.get("boundary_aware_smooth", {}).get("enabled", False) if isinstance(loss_cfg.get("boundary_aware_smooth"), dict) else False
-            temporal = loss_cfg.get("temporal_memory", {}).get("enabled", False) if isinstance(loss_cfg.get("temporal_memory"), dict) else False
-            
-            # Check for float values (V4 dict format)
-            homography = loss_cfg.get("homography_smooth", 0.0)
-            if isinstance(homography, (int, float)) and homography > 0:
-                return True
-                
-            return seg_cons or boundary or temporal
-            
-        return False
+        seg_cons = loss_cfg.get("segment_consistency", {}).get("enabled", False)
+        boundary = loss_cfg.get("boundary_aware_smooth", {}).get("enabled", False)
+        temporal = loss_cfg.get("temporal_memory", {}).get("enabled", False)
+        return seg_cons or boundary or temporal
     
     def _init_scheduler(self, train_loader: DataLoader, epochs: int):
         """Initialize learning rate scheduler."""
@@ -423,69 +396,38 @@ class SegmentAwareTrainer:
                         segment_masks = self.sam_guidance.extract_segment_masks(clip)
                         boundary_maps = self.sam_guidance.compute_boundary_maps(segment_masks)
             
-                # Precomputed SAM features
-                sam_features = None
-                if "sam_features" in batch:
-                    sam_features = batch["sam_features"]
-
+            with torch.cuda.amp.autocast(enabled=torch.cuda.is_available()):
                 # Forward pass
-                if isinstance(self.model, AniFlowFormerTV4):
-                    # V4 Model: Integrated forward + loss
-                    out_fw = self.model(
-                        clip, 
-                        sam_masks=segment_masks, 
-                        sam_features=sam_features,
-                        return_losses=True
-                    )
-                    flows_fw = out_fw["flows_fw"]
-                    flows_bw = out_fw["flows_bw"]
-                    
-                    # Unsupervised photometric loss
-                    # Disable occlusion masking during warmup
-                    use_occ_mask = True
-                    if self.disable_occ_during_warmup and self.global_step < self.warmup_steps:
-                        use_occ_mask = False
-                        
-                    loss_dict = self.base_loss.unsup_bidirectional(clip, flows_fw, flows_bw, use_occ_mask=use_occ_mask)
-                    total_loss = loss_dict["loss"]
-                    
-                    # Add SAM losses from model output
-                    if "sam_losses" in out_fw:
-                        for name, value in out_fw["sam_losses"].items():
-                            total_loss = total_loss + value
-                            loss_dict[f"sam_{name}"] = value.item()
-                            
-                else:
-                    # V1/V3 Model: Separate forward and loss
-                    out_fw = self.model(clip, sam_masks=segment_masks)
-                    flows_fw = out_fw["flows"]
-                    
-                    # Backward pass (reverse clip)
-                    clip_rev = torch.flip(clip, dims=[1])
-                    segment_masks_rev = torch.flip(segment_masks, dims=[1]) if segment_masks is not None else None
-                    out_bw = self.model(clip_rev, sam_masks=segment_masks_rev)
-                    flows_bw_rev = out_bw["flows"]
-                    
-                    # Re-index backward flows
-                    flows_bw = [flows_bw_rev[len(flows_bw_rev) - 1 - k] for k in range(len(flows_fw))]
-                    
-                    # Compute base unsupervised loss
-                    use_occ_mask = True
-                    if self.disable_occ_during_warmup and self.global_step < self.warmup_steps:
-                        use_occ_mask = False
-                    loss_dict = self.base_loss.unsup_bidirectional(clip, flows_fw, flows_bw, use_occ_mask=use_occ_mask)
-
-                    total_loss = loss_dict["total"]
-                    
-                    # Add segment-aware losses (V3 style)
-                    if self.use_segment_losses and segment_masks is not None:
-                        seg_losses = self.segment_loss(
-                            flows_fw, clip, segment_masks, boundary_maps
-                        )
-                        total_loss = total_loss + seg_losses["total_segment_loss"]
-                        loss_dict.update(seg_losses)
+                out_fw = self.model(clip, sam_masks=segment_masks)
+                flows_fw = out_fw["flows"]
                 
-                # Optional semi-supervised loss (Common)
+                # Backward pass (reverse clip)
+                clip_rev = torch.flip(clip, dims=[1])
+                segment_masks_rev = torch.flip(segment_masks, dims=[1]) if segment_masks is not None else None
+                out_bw = self.model(clip_rev, sam_masks=segment_masks_rev)
+                flows_bw_rev = out_bw["flows"]
+                
+                # Re-index backward flows
+                flows_bw = [flows_bw_rev[len(flows_bw_rev) - 1 - k] for k in range(len(flows_fw))]
+                
+                # Compute base unsupervised loss
+                # Disable occlusion masking during warmup to let flow build up
+                use_occ_mask = True
+                if self.disable_occ_during_warmup and self.global_step < self.warmup_steps:
+                    use_occ_mask = False
+                loss_dict = self.base_loss.unsup_bidirectional(clip, flows_fw, flows_bw, use_occ_mask=use_occ_mask)
+
+                total_loss = loss_dict["total"]
+                
+                # Add segment-aware losses
+                if self.use_segment_losses and segment_masks is not None:
+                    seg_losses = self.segment_loss(
+                        flows_fw, clip, segment_masks, boundary_maps
+                    )
+                    total_loss = total_loss + seg_losses["total_segment_loss"]
+                    loss_dict.update(seg_losses)
+                
+                # Optional semi-supervised loss
                 if self.w_epe_sup > 0 and "flow" in batch:
                     gt = batch["flow"]
                     if len(flows_fw) > 0:
@@ -494,7 +436,6 @@ class SegmentAwareTrainer:
                             pred = F.interpolate(pred, size=gt.shape[-2:], mode="bilinear", align_corners=True)
                         epe = _masked_epe(pred, gt).mean()
                         total_loss = total_loss + self.w_epe_sup * epe
-                        loss_dict["epe_sup"] = epe.item()
             
             # Backward
             loss_scaled = total_loss / self.accum_steps

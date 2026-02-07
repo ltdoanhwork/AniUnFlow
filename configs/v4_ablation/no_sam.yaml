@@ -1,0 +1,62 @@
+# V4 Ablation: No SAM (Baseline)
+# ================================
+# Use this as baseline for ablation studies.
+
+seed: 1337
+workspace: workspaces/v4_ablation_no_sam
+
+data:
+  name: animerun_clip
+  train_root: data/AnimeRun_v2/
+  val_root: data/AnimeRun_v2/
+  T: 3
+  stride_min: 1
+  stride_max: 2
+  crop_size: [368, 768]
+  load_sam_masks: false  # No SAM masks
+  batch_size: 4
+  num_workers: 4
+
+model:
+  enc_channels: 32
+  enc_out_channels: 64
+  token_dim: 128
+  lcm_depth: 4
+  lcm_heads: 4
+  gtr_depth: 1
+  gtr_heads: 4
+  iters_per_level: 3
+
+sam:
+  enabled: false  # SAM disabled
+
+loss:
+  photo: 1.0
+  photo_ssim_alpha: 0.85
+  smooth: 0.02
+  consistency: 0.02
+  mag_reg: 0.05
+  min_flow_mag: 0.5
+  warmup_steps: 1000
+  # All SAM losses disabled
+  homography_smooth: 0.0
+  boundary_sharpness: 0.0
+  object_variance: 0.0
+  segment_consistency: 0.0
+  boundary_aware_smooth: 0.0
+
+optim:
+  lr: 1.5e-4
+  weight_decay: 1.0e-4
+  epochs: 100
+  warmup_epochs: 8
+  clip: 1.0
+  scheduler:
+    type: onecycle
+    max_lr: 1.5e-4
+    pct_start: 0.08
+
+logging:
+  use_tb: true
+  tb_dir: tb_v4_no_sam
+  log_every: 50
