@@ -25,8 +25,8 @@ class SAMConfig:
     object_pooling: bool = True         # Segment-level tokens
     
     # === Encoder Settings ===
-    encoder_checkpoint: str = "models/sam2/checkpoints/sam2.1_hiera_base.pt"
-    encoder_config: str = "configs/sam2.1/sam2.1_hiera_b.yaml"
+    encoder_checkpoint: str = "models/sam2/checkpoints/sam2.1_hiera_base_plus.pt"
+    encoder_config: str = "configs/sam2.1/sam2.1_hiera_b+.yaml"
     encoder_freeze: bool = True         # Freeze SAM encoder weights
     feature_dim: int = 256              # SAM feature dimension
     feature_scales: List[int] = field(default_factory=lambda: [8, 16])

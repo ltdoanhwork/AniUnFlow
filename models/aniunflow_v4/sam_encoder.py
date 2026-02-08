@@ -28,8 +28,8 @@ class SAMEncoderWrapper(nn.Module):
     
     def __init__(
         self,
-        checkpoint: str = "models/sam2/checkpoints/sam2.1_hiera_base.pt",
-        config: str = "configs/sam2.1/sam2.1_hiera_b.yaml",
+        checkpoint: str = "models/sam2/checkpoints/sam2.1_hiera_base_plus.pt",
+        config: str = "configs/sam2.1/sam2.1_hiera_b+.yaml",
         freeze: bool = True,
         feature_scales: List[int] = [8, 16],
         device: str = "cuda",

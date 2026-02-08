@@ -14,7 +14,7 @@ data:
   T: 3
   stride_min: 1
   stride_max: 2
-  crop_size: [368, 768]
+  crop_size: [384, 768]
   
   # SAM masks (precomputed)
   load_sam_masks: true
@@ -49,8 +49,8 @@ sam:
   object_pooling: true
   
   # Encoder settings
-  encoder_checkpoint: models/sam2/checkpoints/sam2.1_hiera_base.pt
-  encoder_config: configs/sam2.1/sam2.1_hiera_b.yaml
+  encoder_checkpoint: models/sam2/checkpoints/sam2.1_hiera_base_plus.pt
+  encoder_config: configs/sam2.1/sam2.1_hiera_b+.yaml
   encoder_freeze: true
   feature_dim: 256
   feature_scales: [8, 16]

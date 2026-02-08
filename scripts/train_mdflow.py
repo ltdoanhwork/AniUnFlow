@@ -58,11 +58,16 @@ def main():
         # ... simplified args for brevity, assumes config matches ...
     )
     
-    # Basic validation dataset
-    val_ds = UnlabeledClipDataset(
+    # Validation dataset with ground truth flow
+    from dataio import Animerun
+    val_ds = Animerun(
         root=data_cfg["val_root"],
-        T=3,
-        stride_min=1, stride_max=1,
+        stride_min=1,
+        stride_max=1,
+        crop_size=tuple(data_cfg.get("crop_size", [384, 768])),
+        resize=data_cfg.get("resize", True),
+        keep_aspect=data_cfg.get("keep_aspect", True),
+        pad_mode=data_cfg.get("pad_mode", "reflect"),
         is_test=True
     )
     

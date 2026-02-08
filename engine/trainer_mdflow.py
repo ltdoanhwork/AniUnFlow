@@ -444,12 +444,25 @@ class MDFlowTrainer:
                 break
             
             batch = _to_device(batch, self.device)
-            clip = batch["clip"]
-            if clip.dtype == torch.uint8:
-                clip = clip.float() / 255.0
+            
+            # Handle different dataset formats
+            if "clip" in batch:
+                clip = batch["clip"]
+                if clip.dtype == torch.uint8:
+                    clip = clip.float() / 255.0
+                img1 = clip[:, 0]
+                img2 = clip[:, 1]
+            elif "image1" in batch and "image2" in batch:
+                img1 = batch["image1"]
+                img2 = batch["image2"]
+                if img1.dtype == torch.uint8:
+                    img1 = img1.float() / 255.0
+                    img2 = img2.float() / 255.0
+            else:
+                raise ValueError("Batch must contain either 'clip' or 'image1'/'image2'")
             
             # Predict
-            imgs = torch.cat([clip[:, 0], clip[:, 1]], dim=1)
+            imgs = torch.cat([img1, img2], dim=1)
             out = self.model(imgs)
             
             pred = out
@@ -481,7 +494,16 @@ class MDFlowTrainer:
                 if valid is not None:
                     # Resize valid mask if needed
                     if valid.shape[-2:] != (H, W):
-                        valid = F.interpolate(valid.float(), size=(H, W), mode="nearest").bool()
+                        valid = F.interpolate(valid.float().unsqueeze(1) if valid.ndim == 2 else valid.float(), 
+                                            size=(H, W), mode="nearest").bool()
+                    else:
+                        if valid.ndim == 2:
+                            valid = valid.unsqueeze(0).unsqueeze(0)
+                        elif valid.ndim == 3:
+                            valid = valid.unsqueeze(1)
+                    # Expand to batch size if needed
+                    if valid.shape[0] == 1 and epe_map.shape[0] > 1:
+                        valid = valid.expand(epe_map.shape[0], -1, -1, -1)
                     mask = valid.bool()
                 
                 # Overall EPE
@@ -497,8 +519,18 @@ class MDFlowTrainer:
 
                 # Occlusions
                 if occ is not None:
+                    # Ensure occ has proper dimensions
+                    if occ.ndim == 2:
+                        occ = occ.unsqueeze(0).unsqueeze(0)
+                    elif occ.ndim == 3:
+                        occ = occ.unsqueeze(1)
+                    
                     if occ.shape[-2:] != (H, W):
-                         occ = F.interpolate(occ.float(), size=(H, W), mode="nearest")
+                        occ = F.interpolate(occ.float(), size=(H, W), mode="nearest")
+                    
+                    # Expand to batch size if needed
+                    if occ.shape[0] == 1 and epe_map.shape[0] > 1:
+                        occ = occ.expand(epe_map.shape[0], -1, -1, -1)
                     
                     # occ usually: 1=occluded? Or 0=occluded?
                     # In Sintel/KITTI: often provided as "occ" mask where 1 is occlusion?
@@ -508,8 +540,6 @@ class MDFlowTrainer:
                     # OR is it "noc" map (non-occluded)?
                     # Usually datasets provide "noc" (1 where valid and non-occluded).
                     # If the key is 'occ', standard convention is 1=occluded.
-                    # SegmentAwareTrainer: "epe_occ = epe_map[(occ == 0) & valid]" -> This suggests 'occ' variable is actually a 'non-occluded' mask (1=visible, 0=occluded)?
-                    # Actually standard Sintel SDK returns 'occ'.
                     # Let's stick to generic keys. If "occ" is present:
                     # We will assume key "occ" means 1=occluded, 0=visible (standard name).
                     # OR we can log both and see.
@@ -518,11 +548,6 @@ class MDFlowTrainer:
                     # If occ is "occlusions", then occ=1 is occluded. So occ=0 is non-occluded.
                     # So "epe_occ" getting stats from "occ==0"? That sounds backwards for the variable name.
                     # Unless the variable `occ` from batch is actually `noc` (non-occluded)?
-                    # Let's assume standard behavior: Log epe_occ (masked by occ==1) and epe_noc (masked by occ==0).
-                    # But if the ref code does the opposite, I might invert them.
-                    # Ref code: epe_occ = epe[(occ == 0) ...]. 
-                    # Ref code: epe_nonocc = epe[(occ == 1) ...].
-                    # This implies the batch["occ"] is actually a VALIDITY mask where 1=visible/non-occluded, 0=occluded.
                     # I will mirror this logic.
                     
                     is_occ = (occ < 0.5) & mask

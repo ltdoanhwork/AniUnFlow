@@ -18,6 +18,9 @@ class Animerun(UnlabeledPairDataset):
                         grayscale_p: float = 0.0, 
                         img_exts: List[str] | None = None, 
                         is_test=False, 
+                        resize: bool = True,
+                        keep_aspect: bool = False,
+                        pad_mode: str = "reflect",
                         dstype='Frame_Anime'):
         super(Animerun, self).__init__(root=root,
                                        stride_min=stride_min,
@@ -26,6 +29,9 @@ class Animerun(UnlabeledPairDataset):
                                        color_jitter=color_jitter,
                                        do_flip=do_flip,
                                        grayscale_p=grayscale_p,
+                                       resize=resize,
+                                       keep_aspect=keep_aspect,
+                                       pad_mode=pad_mode,
                                        is_test=is_test)
         if is_test:
             split = "test"
