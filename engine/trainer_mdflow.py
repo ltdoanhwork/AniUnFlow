@@ -156,55 +156,116 @@ def SSIM(x, y, md=1):
     return torch.clamp((1 - SSIM) / 2, 0, 1)
 
 class PairwiseUnsupervisedLoss(nn.Module):
-    def __init__(self, alpha_ssim=0.85, w_smooth=10.0):
+    def __init__(self, cfg):
         super().__init__()
-        self.alpha_ssim = alpha_ssim
-        self.w_smooth = w_smooth
+        loss_cfg = cfg.get("loss", {})
+        self.alpha_ssim = loss_cfg.get("photo_ssim_alpha", 0.85)
+        self.w_smooth = loss_cfg.get("smooth", 10.0) # Correct key 'smooth'
+        self.w_cons = loss_cfg.get("consistency", 0.0)
+        self.w_mag = loss_cfg.get("mag_reg", 0.0)
+        self.min_flow_mag = loss_cfg.get("min_flow_mag", 0.5)
 
-    def forward(self, img1, img2, flow_fw):
+    def abs_robust_loss(self, diff, mask, q=0.4):
+        diff = torch.pow((torch.abs(diff) + 0.01), q)
+        diff = diff * mask
+        loss_mean = diff.sum() / (mask.sum() * 2 + 1e-6) # 2 channels? diff is usually 3-ch or 1-ch map
+        return loss_mean
+
+    def forward(self, img1, img2, flow_fw, flow_bw=None):
         """
         img1, img2: [B,3,H,W]
-        flow_fw: [B,2,h,w] (will be upsampled if needed)
+        flow_fw: [B,2,h,w]
+        flow_bw: [B,2,h,w] (Optional, required for consistency/occlusion)
         """
+        # Upsample flows if needed
         if flow_fw.shape[-2:] != img1.shape[-2:]:
-            flow_fw = F.interpolate(flow_fw, size=img1.shape[-2:], mode="bilinear", align_corners=True)
-            # Scaling flow: if flow was computed at 1/4 res, does it need scaling?
-            # Usually flow magnitude is pixels.
-            # If FastFlowNet output is already scaled to full res pixels but downsampled size, then no mult needed.
-            # But usually upscale aligns it.
-            # Let's assume flow is in pixels of its own resolution.
-            scale_h = img1.shape[2] / flow_fw.shape[2] # wait, standard upsample doesn't change value
-            # But "resize flow" usually implies multiplying logic.
-            # FastFlowNet returns flow at specific scales.
-            # If we upsample flow_1/4 to flow_1, we must multiply by 4.
-            # HOWEVER, `upsample_flow` in original loss did: f_up[:,0] *= sx.
-            # We should probably do that too.
+            # Standard resize logic: multiply by scale
             scale_x = img1.shape[3] / float(flow_fw.shape[3])
             scale_y = img1.shape[2] / float(flow_fw.shape[2])
-            flow_fw = flow_fw * 1.0 # Clone
-            flow_fw[:, 0] *= scale_x
-            flow_fw[:, 1] *= scale_y
+            
+            flow_fw = F.interpolate(flow_fw, size=img1.shape[-2:], mode="bilinear", align_corners=True)
+            flow_fw_scaled = flow_fw.clone()
+            flow_fw_scaled[:, 0] *= scale_x
+            flow_fw_scaled[:, 1] *= scale_y
+        else:
+            flow_fw_scaled = flow_fw
 
-        img2_warped = shim_warp(img2, flow_fw)
+        if flow_bw is not None:
+            if flow_bw.shape[-2:] != img1.shape[-2:]:
+                scale_x = img1.shape[3] / float(flow_bw.shape[3])
+                scale_y = img1.shape[2] / float(flow_bw.shape[2])
+                flow_bw = F.interpolate(flow_bw, size=img1.shape[-2:], mode="bilinear", align_corners=True)
+                flow_bw_scaled = flow_bw.clone()
+                flow_bw_scaled[:, 0] *= scale_x
+                flow_bw_scaled[:, 1] *= scale_y
+            else:
+                flow_bw_scaled = flow_bw
+        else:
+            # If no bw flow provided, we can't compute occlusion/consistency properly
+            # But MDFlowTrainer computes both.
+            flow_bw_scaled = None
+
+        # Warp
+        img2_warped = shim_warp(img2, flow_fw_scaled)
         
+        # Masks / Occlusion
+        if flow_bw_scaled is not None:
+            # Occlusion check
+            # flow_bw warped to img1 frame
+            flow_bw_warped = shim_warp(flow_bw_scaled, flow_fw_scaled)
+            
+            # Simple consistency check
+            flow_diff = flow_fw_scaled + flow_bw_warped
+            mag_sq = torch.sum(flow_diff**2, dim=1, keepdim=True)
+            flow_mag_sq = torch.sum(flow_fw_scaled**2, dim=1, keepdim=True) + torch.sum(flow_bw_warped**2, dim=1, keepdim=True)
+            
+            occ_thresh = 0.01 * flow_mag_sq + 0.5
+            occ_fw = (mag_sq > occ_thresh).float()
+            mask_fw = 1.0 - occ_fw
+        else:
+            mask_fw = torch.ones(img1.shape[0], 1, img1.shape[2], img1.shape[3], device=img1.device)
+            occ_fw = torch.zeros_like(mask_fw)
+
         # Photometric
         # L1
         diff = torch.abs(img1 - img2_warped)
-        l1_loss = diff.mean()
-        # SSIM
-        ssim_loss = SSIM(img1, img2_warped).mean()
+        l1_loss = (diff * mask_fw).sum() / (mask_fw.sum() * 3 + 1e-6)
+        
+        # SSIM - Weighted by mask? 
+        # SSIM implementation returns map.
+        ssim_map = SSIM(img1, img2_warped)
+        ssim_loss = (ssim_map * mask_fw).sum() / (mask_fw.sum() * 3 + 1e-6)
         
         photo_loss = (1 - self.alpha_ssim) * l1_loss + self.alpha_ssim * ssim_loss
         
-        # Smoothness
-        smooth_loss = smooth_grad_1st(flow_fw, img1)
+        # Smoothness (1st order or 2nd order? Config doesn't specify diff, assuming 1st)
+        smooth_loss = smooth_grad_1st(flow_fw_scaled, img1)
         
-        total = photo_loss + self.w_smooth * smooth_loss
+        # Consistency
+        cons_loss = 0.0
+        if flow_bw_scaled is not None and self.w_cons > 0:
+            # Consistency loss on non-occluded regions
+            cons_loss = (torch.norm(flow_fw_scaled + flow_bw_warped, dim=1, keepdim=True) * mask_fw).sum() / (mask_fw.sum() + 1e-6)
+
+        # Mag Reg (hinge loss to prevent collapse)
+        mag_loss = 0.0
+        if self.w_mag > 0:
+            mag = torch.norm(flow_fw_scaled, dim=1)
+            # Penalize if mag < min_flow_mag
+            # ReLU(min - mag)
+            mag_loss = F.relu(self.min_flow_mag - mag).mean()
+
+        total = photo_loss + \
+                self.w_smooth * smooth_loss + \
+                self.w_cons * cons_loss + \
+                self.w_mag * mag_loss
         
         return {
             "total": total,
             "photo": photo_loss,
-            "smooth": smooth_loss
+            "smooth": smooth_loss,
+            "cons": cons_loss,
+            "mag": mag_loss
         }
 
 class MDFlowTrainer:
@@ -230,11 +291,7 @@ class MDFlowTrainer:
         self.model.train()
         
         # Loss
-        # Loss
-        self.loss_fn = PairwiseUnsupervisedLoss(
-            alpha_ssim=cfg.get("loss", {}).get("alpha_ssim", 0.85), # Standard 0.85 usually
-            w_smooth=cfg.get("loss", {}).get("w_smooth", 10.0), # Matches typical UnFlow/ARFlow range
-        )
+        self.loss_fn = PairwiseUnsupervisedLoss(cfg)
         
         # Optimizer
         optim_cfg = cfg.get("optim", {})
