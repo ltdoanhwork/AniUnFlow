@@ -102,15 +102,38 @@ def resize_mask(mask: Optional[torch.Tensor], target_hw: Tuple[int, int], device
         mask = F.interpolate(mask.unsqueeze(1).float(), size=(Ht, Wt), mode="nearest").squeeze(1)
     return mask.bool()
 
-# --- Custom Pairwise Loss ---
+# --- Inlined from models/MDFlow/utils.py (avoids imageio dependency) ---
 
-# Import from MDFlow utils
-try:
-    from models.MDFlow.utils import warp, get_occ_mask
-except ImportError:
-    import sys
-    sys.path.append(str(Path(__file__).parent.parent))
-    from models.MDFlow.utils import warp, get_occ_mask
+def _warp(x, flo):
+    """Warp image x by optical flow flo (pixel displacement)."""
+    flo = flo.clone()
+    B, C, H, W = x.size()
+    xx = torch.arange(0, W).view(1, -1).repeat(H, 1)
+    yy = torch.arange(0, H).view(-1, 1).repeat(1, W)
+    xx = xx.view(1, 1, H, W).repeat(B, 1, 1, 1)
+    yy = yy.view(1, 1, H, W).repeat(B, 1, 1, 1)
+    grid = torch.cat([xx, yy], 1).to(x)
+    vgrid = grid + flo
+    vgrid[:, 0, :, :] = 2.0 * vgrid[:, 0, :, :] / max(W-1, 1) - 1.0
+    vgrid[:, 1, :, :] = 2.0 * vgrid[:, 1, :, :] / max(H-1, 1) - 1.0
+    vgrid = vgrid.permute(0, 2, 3, 1)
+    output = F.grid_sample(x, vgrid, mode='bilinear', align_corners=True)
+    return output
+
+def _get_flow_mag(flow):
+    return (flow * flow).sum(1, keepdim=True)
+
+def _get_occ_mask(flow_fw, flow_bw, scale=0.01, bias=0.5):
+    """Returns (fw_valid, bw_valid): 1=valid/non-occluded, 0=occluded."""
+    flow_fw_warp = _warp(flow_fw, flow_bw)
+    flow_bw_warp = _warp(flow_bw, flow_fw)
+    flow_fw_diff = flow_fw + flow_bw_warp
+    flow_bw_diff = flow_bw + flow_fw_warp
+    fw_occ_thresh = scale * (_get_flow_mag(flow_fw) + _get_flow_mag(flow_bw_warp)) + bias
+    bw_occ_thresh = scale * (_get_flow_mag(flow_bw) + _get_flow_mag(flow_fw_warp)) + bias
+    flow_fw_occ = _get_flow_mag(flow_fw_diff) < fw_occ_thresh
+    flow_bw_occ = _get_flow_mag(flow_bw_diff) < bw_occ_thresh
+    return flow_fw_occ.float(), flow_bw_occ.float()
 
 class PairwiseUnsupervisedLoss(nn.Module):
     def __init__(self, cfg):

@@ -409,6 +409,14 @@ class UnlabeledClipDataset(Dataset):
                             # Legacy multi-channel (S, H, W)
                             mask_np = self._resize_mask(mask_np)
                         mask = torch.from_numpy(mask_np)
+                    
+                    # Convert binary masks to multi-segment via connected components
+                    if mask.ndim == 2 and len(torch.unique(mask)) <= 2:
+                        import cv2 as cv
+                        fg = (mask.numpy() > 0).astype(np.uint8)
+                        num_labels, labels = cv.connectedComponents(fg, connectivity=8)
+                        mask = torch.from_numpy(labels.astype(np.uint8))
+                    
                     mask_list.append(mask)
                 else:
                     # Fallback: empty integer label map (background only)

@@ -555,7 +555,9 @@ class SegmentAwareTrainer:
         # Segment statistics
         if self.log_segment_stats and segment_masks is not None:
             mask = segment_masks.detach()
-            num_segments = mask.shape[2]
+            # Count actual unique labels (excluding background=0)
+            num_segments = len(torch.unique(mask)) - 1  # subtract background
+            num_segments = max(num_segments, 0)
             avg_segment_size = (mask > 0.5).float().sum(dim=(-2, -1)).mean().item()
             self.writer.add_scalar("train_segment/num_segments", num_segments, step)
             self.writer.add_scalar("train_segment/avg_size", avg_segment_size, step)
