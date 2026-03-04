@@ -19,7 +19,7 @@ data:
   
   # SAM masks (precomputed)
   load_sam_masks: true
-  sam_mask_dir: data/AnimeRun_v2/SAM_Masks
+  sam_mask_dir: data/AnimeRun_v2/SAM_Masks_v2
   
   batch_size: 2
   num_workers: 4
@@ -58,7 +58,7 @@ sam:
   
   # Mask settings
   num_segments: 32
-  mask_cache_dir: data/AnimeRun_v2/SAM_Masks
+  mask_cache_dir: data/AnimeRun_v2/SAM_Masks_v2
 
 # ========================= Loss Configuration =========================
 loss:
