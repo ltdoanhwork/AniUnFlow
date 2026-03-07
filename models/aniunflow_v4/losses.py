@@ -87,11 +87,17 @@ class HomographySmoothLoss(nn.Module):
         
         b = torch.cat([flow[:, 0], flow[:, 1]], dim=0)  # (2N,)
         
-        # Solve least squares
+        # Solve least-squares system robustly across torch versions.
         try:
-            params, _ = torch.lstsq(b.unsqueeze(1), A)
-            params = params[:6, 0]  # (6,)
-        except:
+            if hasattr(torch.linalg, "lstsq"):
+                params = torch.linalg.lstsq(A, b.unsqueeze(1)).solution.squeeze(1)
+            else:
+                # Fallback for older versions.
+                params = torch.linalg.pinv(A) @ b
+            if params.numel() < 6:
+                return flow
+            params = params[:6]
+        except RuntimeError:
             return flow
         
         # Compute predicted flow

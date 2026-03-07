@@ -1,0 +1,90 @@
+# V4 EPE-Optimized Training Config
+# =================================
+# Tuned for AnimeRun_v2 with stable non-collapse training.
+
+seed: 1337
+workspace: workspaces/v4_epe_optimized
+
+data:
+  name: animerun_clip
+  train_root: data/AnimeRun_v2/
+  val_root: data/AnimeRun_v2/
+  T: 3
+  stride_min: 1
+  stride_max: 2
+  crop_size: [256, 512]
+  resize: true
+  keep_aspect: false
+  load_sam_masks: true
+  sam_mask_dir: data/AnimeRun_v2/SAM_Masks_v2
+  batch_size: 4
+  num_workers: 4
+
+model:
+  enc_channels: 32
+  enc_out_channels: 64
+  token_dim: 128
+  lcm_depth: 4
+  lcm_heads: 4
+  gtr_depth: 1
+  gtr_heads: 4
+  iters_per_level: 3
+
+sam:
+  enabled: true
+  use_encoder_features: true
+  use_mask_guidance: true
+  feature_concat: true
+  attention_bias: true
+  cost_modulation: true
+  object_pooling: true
+  encoder_checkpoint: models/sam2/checkpoints/sam2.1_hiera_tiny.pt
+  encoder_config: configs/sam2.1/sam2.1_hiera_t.yaml
+  encoder_freeze: true
+  feature_dim: 256
+  feature_scales: [8, 16]
+  num_segments: 32
+  mask_cache_dir: data/AnimeRun_v2/SAM_Masks_v2
+
+loss:
+  photo: 1.0
+  photo_ssim_alpha: 0.85
+  smooth: 0.03
+  consistency: 0.03
+
+  # Stronger anti-collapse than v4_full_lite
+  mag_reg: 0.25
+  min_flow_mag: 1.0
+  warmup_steps: 4000
+  disable_occ_during_warmup: true
+
+  # SAM-guided regularization
+  homography_smooth: 0.10
+  boundary_sharpness: 0.08
+  object_variance: 0.10
+  segment_consistency: 0.05
+  boundary_aware_smooth: 0.08
+
+optim:
+  lr: 1.5e-4
+  weight_decay: 1.0e-4
+  epochs: 60
+  warmup_epochs: 6
+  clip: 1.0
+  scheduler:
+    type: onecycle
+    max_lr: 2.0e-4
+    pct_start: 0.10
+
+logging:
+  use_tb: true
+  tb_dir: tb_v4_epe_optimized
+  log_every: 50
+
+validation:
+  every_n_epochs: 2
+
+ckpt:
+  save_every: 5
+  keep_last: 3
+  save_best: true

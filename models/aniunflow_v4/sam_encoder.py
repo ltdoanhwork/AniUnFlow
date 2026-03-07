@@ -40,7 +40,11 @@ class SAMEncoderWrapper(nn.Module):
         self.config = config
         self.freeze = freeze
         self.feature_scales = feature_scales
-        self.device = device
+        # Graceful fallback for CPU-only environments.
+        if device == "cuda" and not torch.cuda.is_available():
+            self.device = "cpu"
+        else:
+            self.device = device
         
         # Lazy load to avoid loading SAM at import time
         self._encoder = None
@@ -86,6 +90,7 @@ class SAMEncoderWrapper(nn.Module):
             return {}
         
         B, C, H, W = images.shape
+        images = images.to(self.device)
         
         with torch.set_grad_enabled(not self.freeze):
             # SAM expects images in [0, 255] range typically

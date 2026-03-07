@@ -3,7 +3,7 @@ V4 Configuration with Ablation Toggles
 ======================================
 All SAM components can be enabled/disabled via config.
 """
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from typing import List, Optional
 
 
@@ -50,6 +50,7 @@ class LossConfig:
     mag_reg: float = 0.05               # Flow magnitude regularization
     min_flow_mag: float = 0.5           # Target minimum magnitude
     warmup_steps: int = 1000            # Steps before occlusion masking
+    disable_occ_during_warmup: bool = False
     
     # === SAM-Guided Losses (toggleable) ===
     homography_smooth: float = 0.0      # 0=disabled, >0=enabled with weight
@@ -110,9 +111,15 @@ class V4Config:
     @classmethod
     def from_dict(cls, d: dict) -> "V4Config":
         """Create config from dictionary (e.g., from YAML)."""
-        model = ModelConfig(**d.get("model", {}))
-        sam = SAMConfig(**d.get("sam", {}))
-        loss = LossConfig(**d.get("loss", {}))
+        def _build_dc(dc_cls, payload):
+            payload = payload or {}
+            valid = {f.name for f in fields(dc_cls)}
+            filtered = {k: v for k, v in payload.items() if k in valid}
+            return dc_cls(**filtered)
+
+        model = _build_dc(ModelConfig, d.get("model", {}))
+        sam = _build_dc(SAMConfig, d.get("sam", {}))
+        loss = _build_dc(LossConfig, d.get("loss", {}))
         
         return cls(
             model=model, 

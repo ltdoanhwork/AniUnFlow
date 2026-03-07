@@ -357,8 +357,14 @@ class AniFlowFormerTV4(nn.Module):
             # Backward pass
             flows_bw_list, bn_bw = self._get_flows(clip_bw, masks_bw, feats_bw)
             
-            # Reorder backward flows
-            outputs["flows_bw"] = flows_bw_list
+            # Reorder backward flows to align with forward pair indexing.
+            # Example for T=3:
+            #   reversed clip pairs are (2->1, 1->0), but loss expects (1->0, 2->1)
+            if len(flows_bw_list) == len(flows_fw):
+                L = len(flows_bw_list)
+                outputs["flows_bw"] = [flows_bw_list[L - 1 - i] for i in range(L)]
+            else:
+                outputs["flows_bw"] = flows_bw_list
             
             # Compute SAM losses
             if sam_masks is not None and len(flows_fw) > 0:
