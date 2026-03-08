@@ -191,6 +191,13 @@ class SegmentAwareTrainer:
         self.disable_occ_during_warmup = bool(
             _loss_get("disable_occ_during_warmup", None, self.warmup_steps > 0)
         )
+        # Optional epoch-based occlusion schedule (UnSAMFlow-like)
+        self.occ_aware_start_epoch = int(_loss_get("occ_aware_start_epoch", None, 1))
+
+        # Optional epoch-based SAM loss schedule (2-stage style)
+        self.sam_loss_start_epoch = int(_loss_get("sam_loss_start_epoch", None, 1))
+        self.sam_loss_ramp_epochs = int(_loss_get("sam_loss_ramp_epochs", None, 0))
+        self.sam_loss_scale = float(_loss_get("sam_loss_scale", None, 1.0))
         
         # Segment-aware losses
         self.use_segment_losses = self._has_segment_losses()
@@ -251,6 +258,17 @@ class SegmentAwareTrainer:
         val_cfg = cfg.get("validation", {})
         self.val_every_epochs = val_cfg.get("every_n_epochs", 5)
         self.val_every_steps = val_cfg.get("every_n_steps", None)
+
+    def _current_sam_scale(self) -> float:
+        """Epoch-based SAM loss scaling (for 2-stage training schedules)."""
+        if self.current_epoch < self.sam_loss_start_epoch:
+            return 0.0
+        if self.sam_loss_ramp_epochs <= 0:
+            return self.sam_loss_scale
+        # Linear ramp from start epoch
+        p = (self.current_epoch - self.sam_loss_start_epoch + 1) / float(self.sam_loss_ramp_epochs)
+        p = max(0.0, min(1.0, p))
+        return self.sam_loss_scale * p
     
     def _build_model(self) -> nn.Module:
         """Build AniFlowFormer-T model from config."""
@@ -474,6 +492,7 @@ class SegmentAwareTrainer:
                     use_occ_mask = not (
                         self.disable_occ_during_warmup and self.global_step < self.warmup_steps
                     )
+                    use_occ_mask = use_occ_mask and (self.current_epoch >= self.occ_aware_start_epoch)
                     loss_dict = self.base_loss.unsup_bidirectional(
                         clip, flows_fw, flows_bw, use_occ_mask=use_occ_mask
                     )
@@ -481,9 +500,11 @@ class SegmentAwareTrainer:
 
                     # Add SAM losses from model output
                     if "sam_losses" in out_fw:
+                        sam_scale = self._current_sam_scale()
                         for name, value in out_fw["sam_losses"].items():
-                            total_loss = total_loss + value
-                            loss_dict[f"sam_{name}"] = float(value.detach())
+                            scaled = value * sam_scale
+                            total_loss = total_loss + scaled
+                            loss_dict[f"sam_{name}"] = float(scaled.detach())
 
                 else:
                     # V1/V3 Model: Separate forward and loss
@@ -502,6 +523,7 @@ class SegmentAwareTrainer:
                     use_occ_mask = not (
                         self.disable_occ_during_warmup and self.global_step < self.warmup_steps
                     )
+                    use_occ_mask = use_occ_mask and (self.current_epoch >= self.occ_aware_start_epoch)
                     loss_dict = self.base_loss.unsup_bidirectional(
                         clip, flows_fw, flows_bw, use_occ_mask=use_occ_mask
                     )
@@ -651,7 +673,11 @@ class SegmentAwareTrainer:
             # Get segment masks if SAM enabled
             segment_masks = None
             if self.use_sam and self.sam_guidance is not None:
-                segment_masks = self.sam_guidance.extract_segment_masks(clip)
+                # Prefer preloaded masks from dataset for speed/consistency.
+                if "sam_masks" in batch:
+                    segment_masks = batch["sam_masks"]
+                else:
+                    segment_masks = self.sam_guidance.extract_segment_masks(clip)
             
             with torch.cuda.amp.autocast(enabled=torch.cuda.is_available()):
                 out = self.model(clip, sam_masks=segment_masks)

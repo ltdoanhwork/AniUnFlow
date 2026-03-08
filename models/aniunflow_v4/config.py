@@ -34,6 +34,12 @@ class SAMConfig:
     # === Mask Settings ===
     num_segments: int = 32              # Max segments per frame
     mask_cache_dir: Optional[str] = None  # Precomputed masks directory
+    
+    # === UnSAMFlow-style mask-correlation branch ===
+    add_mask_corr: bool = False
+    mask_corr_aggregation: str = "concat"  # concat | residual
+    mask_corr_weight: float = 1.0
+    mask_corr_min_pixels: int = 8
 
 
 @dataclass

@@ -16,6 +16,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
+from typing import Optional
 
 
 class GlobalMatcher(nn.Module):
@@ -174,18 +175,121 @@ class GlobalMatchingTokenizer(nn.Module):
         token_dim=192,
         num_heads=4,
         topk=128,  # Top-k correspondences for efficiency
+        add_mask_corr: bool = False,
+        mask_corr_aggregation: str = "concat",
+        mask_corr_weight: float = 1.0,
+        num_segments: int = 32,
+        min_mask_pixels: int = 8,
     ):
         super().__init__()
         self.dims = dims
         self.token_dim = token_dim
+        self.add_mask_corr = add_mask_corr
+        self.mask_corr_aggregation = mask_corr_aggregation
+        self.mask_corr_weight = float(mask_corr_weight)
+        self.num_segments = int(num_segments)
+        self.min_mask_pixels = int(min_mask_pixels)
+        
+        if self.mask_corr_aggregation not in ("concat", "residual"):
+            raise ValueError(
+                f"Unsupported mask_corr_aggregation={self.mask_corr_aggregation}. "
+                "Use 'concat' or 'residual'."
+            )
         
         # Use EfficientGlobalMatcher for memory efficiency
         self.matchers = nn.ModuleList([
             EfficientGlobalMatcher(dim=d, token_dim=token_dim, num_heads=num_heads, topk=topk)
             for d in dims
         ])
+        
+        # UnSAMFlow-style mask-correlation branch.
+        self.mask_matchers = None
+        self.mask_fusers = None
+        if self.add_mask_corr:
+            self.mask_matchers = nn.ModuleList([
+                EfficientGlobalMatcher(dim=d, token_dim=token_dim, num_heads=num_heads, topk=topk)
+                for d in dims
+            ])
+            if self.mask_corr_aggregation == "concat":
+                self.mask_fusers = nn.ModuleList([
+                    nn.Sequential(
+                        nn.Conv2d(2 * token_dim, token_dim, 1),
+                        nn.GELU(),
+                        nn.Conv2d(token_dim, token_dim, 1),
+                    )
+                    for _ in dims
+                ])
     
-    def forward(self, feats_levels):
+    def _mask_to_labels(self, mask_t: torch.Tensor) -> torch.Tensor:
+        """
+        Normalize mask tensor to integer labels (B, H, W).
+        Supports:
+        - (B, H, W) labels
+        - (B, 1, H, W) labels
+        - (B, S, H, W) one-hot/soft masks
+        """
+        if mask_t.dim() == 3:
+            return mask_t.long()
+        if mask_t.dim() != 4:
+            raise ValueError(f"Unsupported mask dim: {mask_t.shape}")
+        if mask_t.shape[1] == 1:
+            return mask_t[:, 0].long()
+        # Multi-channel masks: map to 1..S (keep 0 as background for absent/invalid areas).
+        return mask_t.argmax(dim=1).long() + 1
+    
+    def _build_mask_feature_map(
+        self,
+        feat: torch.Tensor,          # (B, C, H, W)
+        mask_t: torch.Tensor,        # (B, H, W) or (B, 1, H, W) or (B, S, H, W)
+    ) -> torch.Tensor:
+        """
+        Build mask-pooled feature map (UnSAMFlow-style):
+        1) pool a representative feature vector per segment (max pooling),
+        2) broadcast representative vector back to pixels in the segment.
+        """
+        B, C, H, W = feat.shape
+        labels = self._mask_to_labels(mask_t)
+        
+        # Match resolution with current feature level.
+        if labels.shape[-2:] != (H, W):
+            labels = F.interpolate(
+                labels.unsqueeze(1).float(),
+                size=(H, W),
+                mode="nearest",
+            ).squeeze(1).long()
+        
+        out = torch.zeros_like(feat)
+        for b in range(B):
+            feat_b = feat[b]         # (C, H, W)
+            labels_b = labels[b]     # (H, W)
+            used_any_segment = False
+            
+            for seg_id in labels_b.unique():
+                seg_idx = int(seg_id.item())
+                # 0 is background; clip unexpected huge ids.
+                if seg_idx <= 0 or seg_idx > self.num_segments:
+                    continue
+                
+                seg_mask = (labels_b == seg_idx)
+                if int(seg_mask.sum().item()) < self.min_mask_pixels:
+                    continue
+                
+                seg_feat = feat_b[:, seg_mask]             # (C, N_seg)
+                pooled = seg_feat.amax(dim=1)              # (C,)
+                out[b] = out[b] + pooled[:, None, None] * seg_mask.float().unsqueeze(0)
+                used_any_segment = True
+            
+            # Fallback: if masks are empty/invalid, keep appearance features.
+            if not used_any_segment:
+                out[b] = feat_b
+        
+        return out
+    
+    def forward(
+        self,
+        feats_levels,
+        segment_masks: Optional[torch.Tensor] = None,  # (B, T, H, W) or (B, T, 1, H, W)
+    ):
         """
         Args:
             feats_levels: List of 3 levels, each is a list of T frames
@@ -196,13 +300,25 @@ class GlobalMatchingTokenizer(nn.Module):
                     [[tok_01_l1, tok_12_l1, ...], [tok_01_l2, ...], [tok_01_l3, ...]]
         """
         l1, l2, l3 = feats_levels
+        use_mask_corr = self.add_mask_corr and (segment_masks is not None) and (self.mask_matchers is not None)
         
         tokens = []
-        for level_feats, matcher in zip([l1, l2, l3], self.matchers):
+        for lvl_idx, (level_feats, matcher) in enumerate(zip([l1, l2, l3], self.matchers)):
             level_tokens = []
             for t in range(len(level_feats) - 1):
                 # Match consecutive frames
                 match_tok = matcher(level_feats[t], level_feats[t+1])
+                
+                if use_mask_corr:
+                    mask_feat_1 = self._build_mask_feature_map(level_feats[t], segment_masks[:, t])
+                    mask_feat_2 = self._build_mask_feature_map(level_feats[t + 1], segment_masks[:, t + 1])
+                    mask_tok = self.mask_matchers[lvl_idx](mask_feat_1, mask_feat_2)
+                    
+                    if self.mask_corr_aggregation == "concat":
+                        match_tok = self.mask_fusers[lvl_idx](torch.cat([match_tok, mask_tok], dim=1))
+                    else:
+                        match_tok = match_tok + self.mask_corr_weight * mask_tok
+                
                 level_tokens.append(match_tok)
             tokens.append(level_tokens)
         

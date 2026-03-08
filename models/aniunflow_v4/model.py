@@ -63,6 +63,11 @@ class AniFlowFormerTV4(nn.Module):
             dims=[c, c*2, c*3],
             token_dim=self.model_cfg.token_dim,
             num_heads=4, # Hardcoded or from config? V1 uses 4.
+            add_mask_corr=bool(self.sam_cfg.enabled and getattr(self.sam_cfg, "add_mask_corr", False)),
+            mask_corr_aggregation=getattr(self.sam_cfg, "mask_corr_aggregation", "concat"),
+            mask_corr_weight=float(getattr(self.sam_cfg, "mask_corr_weight", 1.0)),
+            num_segments=int(getattr(self.sam_cfg, "num_segments", 32)),
+            min_mask_pixels=int(getattr(self.sam_cfg, "mask_corr_min_pixels", 8)),
         )
         
         self.lcm = LatentCostMemory(
@@ -148,6 +153,19 @@ class AniFlowFormerTV4(nn.Module):
         
         # ========== SAM Feature Integration ==========
         boundary_maps = None
+        mask_labels = None
+        if sam_masks is not None:
+            # Normalize to integer labels: (B, T, H, W)
+            if sam_masks.dim() == 5:
+                if sam_masks.shape[2] == 1:
+                    mask_labels = sam_masks[:, :, 0]
+                else:
+                    # Multi-channel masks -> labels in 1..S
+                    mask_labels = sam_masks.argmax(dim=2).long() + 1
+            elif sam_masks.dim() == 4:
+                mask_labels = sam_masks
+            if mask_labels is not None:
+                mask_labels = mask_labels.long()
         
         if self.sam_cfg.enabled and self.sam_cfg.use_encoder_features:
             # Prepare SAM features (same as before)
@@ -197,17 +215,11 @@ class AniFlowFormerTV4(nn.Module):
                 feats_levels = new_feats_levels
 
         # ========== Mask Guidance Integration ==========
-        if self.sam_cfg.enabled and self.sam_cfg.use_mask_guidance and sam_masks is not None:
-            # Normalize mask format
-            if sam_masks.dim() == 4:
-                masks = sam_masks
-            else:
-                masks = sam_masks.squeeze(2)
-            
+        if self.sam_cfg.enabled and self.sam_cfg.use_mask_guidance and mask_labels is not None:
             # Compute boundaries (for losses mainly)
             boundary_maps = []
             for t in range(T):
-                boundary = compute_boundary_map(masks[:, t])
+                boundary = compute_boundary_map(mask_labels[:, t])
                 boundary_maps.append(boundary)
             boundary_maps = torch.stack(boundary_maps, dim=1)
             
@@ -222,7 +234,7 @@ class AniFlowFormerTV4(nn.Module):
                     
                     enhanced_list = []
                     for t in range(T):
-                        seg_labels = masks[:, t:t+1].float() / self.sam_cfg.num_segments
+                        seg_labels = mask_labels[:, t:t+1].float() / max(float(self.sam_cfg.num_segments), 1.0)
                         feat_h, feat_w = level_feats[t].shape[-2:]
                         
                         boundary_t = F.interpolate(boundary_maps[:, t], size=(feat_h, feat_w), mode='nearest')
@@ -236,7 +248,14 @@ class AniFlowFormerTV4(nn.Module):
 
         # ========== V1 Pipeline ==========
         # Tokenizer
-        tokens = self.tokenizer(feats_levels)
+        tokens = self.tokenizer(
+            feats_levels,
+            segment_masks=(
+                mask_labels
+                if bool(self.sam_cfg.enabled and getattr(self.sam_cfg, "add_mask_corr", False))
+                else None
+            ),
+        )
         
         # LCM
         latent = self.lcm(tokens)
