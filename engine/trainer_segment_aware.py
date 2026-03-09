@@ -220,6 +220,11 @@ class SegmentAwareTrainer:
             weight_decay=float(optim_cfg.get("weight_decay", 1e-4)),
             betas=tuple(optim_cfg.get("betas", [0.9, 0.999])),
         )
+
+        # Optional stage-C style encoder freezing.
+        self.freeze_encoder_epoch = int(optim_cfg.get("freeze_encoder_epoch", 0))
+        self.freeze_encoder_levels = optim_cfg.get("freeze_encoder_levels", ["lvl1"])
+        self._encoder_frozen = False
         
         # Scheduler (configured later)
         self.scheduler = None
@@ -258,6 +263,10 @@ class SegmentAwareTrainer:
         val_cfg = cfg.get("validation", {})
         self.val_every_epochs = val_cfg.get("every_n_epochs", 5)
         self.val_every_steps = val_cfg.get("every_n_steps", None)
+        self.early_stop_delta = float(val_cfg.get("early_stop_delta", 0.0))
+        self.early_stop_patience = int(val_cfg.get("early_stop_patience", 0))
+        self._early_stop_worse_count = 0
+        self._prev_val_metric = None
 
     def _current_sam_scale(self) -> float:
         """Epoch-based SAM loss scaling (for 2-stage training schedules)."""
@@ -385,6 +394,41 @@ class SegmentAwareTrainer:
             self.sched_per_batch = True
         else:
             self.scheduler = None
+
+    def _maybe_freeze_encoder(self):
+        """Freeze selected encoder levels after configured epoch."""
+        if self._encoder_frozen:
+            return
+        if self.freeze_encoder_epoch <= 0 or self.current_epoch < self.freeze_encoder_epoch:
+            return
+        if not hasattr(self.model, "encoder"):
+            return
+
+        encoder = getattr(self.model, "encoder")
+        frozen_params = 0
+        levels = self.freeze_encoder_levels or []
+
+        if not levels:
+            for p in encoder.parameters():
+                if p.requires_grad:
+                    p.requires_grad = False
+                    frozen_params += p.numel()
+        else:
+            for level_name in levels:
+                module = getattr(encoder, level_name, None)
+                if module is None:
+                    continue
+                for p in module.parameters():
+                    if p.requires_grad:
+                        p.requires_grad = False
+                        frozen_params += p.numel()
+
+        self._encoder_frozen = frozen_params > 0
+        if self._encoder_frozen:
+            print(
+                f"[Trainer] Froze encoder params at epoch {self.current_epoch}: "
+                f"{frozen_params} params ({levels if levels else 'all'})"
+            )
     
     def fit(self, train_loader: DataLoader, val_loader: Optional[DataLoader] = None):
         """Main training loop."""
@@ -394,6 +438,7 @@ class SegmentAwareTrainer:
         for epoch in range(1, epochs + 1):
             self.current_epoch = epoch
             t0 = time.time()
+            self._maybe_freeze_encoder()
             
             # Train one epoch
             train_metrics = self._train_one_epoch(train_loader)
@@ -430,6 +475,29 @@ class SegmentAwareTrainer:
             if val_metric is not None and np.isfinite(val_metric) and val_metric < self.best_metric:
                 self.best_metric = val_metric
                 self._save_checkpoint("best.pth")
+
+            # Early stop if val metric degrades by > delta for N consecutive validations.
+            if val_metric is not None and np.isfinite(val_metric):
+                if self._prev_val_metric is not None:
+                    if (
+                        self.early_stop_patience > 0
+                        and val_metric > (self._prev_val_metric + self.early_stop_delta)
+                    ):
+                        self._early_stop_worse_count += 1
+                    else:
+                        self._early_stop_worse_count = 0
+                self._prev_val_metric = val_metric
+
+                if (
+                    self.early_stop_patience > 0
+                    and self._early_stop_worse_count >= self.early_stop_patience
+                ):
+                    print(
+                        "[Trainer] Early stop triggered: "
+                        f"val metric worsened by > {self.early_stop_delta} for "
+                        f"{self._early_stop_worse_count} consecutive validations."
+                    )
+                    break
             
             # Periodic checkpoint
             ckpt_cfg = self.cfg.get("ckpt", {})

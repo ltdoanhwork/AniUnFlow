@@ -40,6 +40,10 @@ class SAMConfig:
     mask_corr_aggregation: str = "concat"  # concat | residual
     mask_corr_weight: float = 1.0
     mask_corr_min_pixels: int = 8
+    matcher_topk: int = 96
+    segment_cross_attn_every: int = 2
+    mask_corr_weight_init: float = 0.5
+    boundary_gate_strength: float = 0.3
 
 
 @dataclass
@@ -70,6 +74,9 @@ class LossConfig:
 @dataclass 
 class ModelConfig:
     """Model architecture configuration."""
+
+    # Backbone mode
+    backbone: str = "v4"  # v4 | v4_5_matcher_lcm | v4_5_hybrid_sam
     
     # Encoder
     enc_channels: int = 32
@@ -89,6 +96,10 @@ class ModelConfig:
     
     # Decoder
     iters_per_level: int = 3
+
+    # V4.5 iterative refiner
+    refiner_iters: int = 10
+    use_convex_upsampler: bool = True
     
     # Dropout
     dropout: float = 0.0

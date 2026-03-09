@@ -1,0 +1,108 @@
+# V4 + UnSAMFlow-style mask-correlation (stability-tuned)
+# =======================================================
+# Tuning focus:
+# - Keep mask-correlation branch on
+# - Stabilize EPE by delaying SAM/occ constraints
+# - Lower LR peak to avoid degradation after epoch ~4-6
+
+seed: 1337
+workspace: workspaces/v4_unsamflow_strategy_v2
+
+data:
+  name: animerun_clip
+  train_root: data/AnimeRun_v2/
+  val_root: data/AnimeRun_v2/
+  T: 3
+  stride_min: 1
+  stride_max: 1
+  crop_size: [256, 512]
+  resize: true
+  keep_aspect: false
+  load_sam_masks: true
+  sam_mask_dir: data/AnimeRun_v2/SAM_Masks_v2
+  val_load_sam_masks: true
+  val_sam_mask_dir: data/AnimeRun_v2/SAM_Masks_v2
+  batch_size: 8
+  num_workers: 4
+  shuffle: true
+  drop_last: true
+
+model:
+  enc_channels: 32
+  enc_out_channels: 64
+  token_dim: 128
+  lcm_depth: 4
+  lcm_heads: 4
+  gtr_depth: 1
+  gtr_heads: 4
+  iters_per_level: 3
+
+sam:
+  enabled: true
+  use_encoder_features: true
+  use_mask_guidance: true
+  feature_concat: true
+  attention_bias: true
+  cost_modulation: true
+  object_pooling: true
+  encoder_checkpoint: models/sam2/checkpoints/sam2.1_hiera_tiny.pt
+  encoder_config: configs/sam2.1/sam2.1_hiera_t.yaml
+  encoder_freeze: true
+  feature_dim: 256
+  feature_scales: [8, 16]
+  num_segments: 32
+  mask_cache_dir: data/AnimeRun_v2/SAM_Masks_v2
+  add_mask_corr: true
+  mask_corr_aggregation: residual
+  mask_corr_weight: 0.5
+  mask_corr_min_pixels: 8
+
+loss:
+  photo: 1.0
+  photo_ssim_alpha: 0.85
+  smooth: 0.02
+  consistency: 0.02
+
+  # Anti-collapse + warmup
+  mag_reg: 0.08
+  min_flow_mag: 0.50
+  warmup_steps: 3000
+  disable_occ_during_warmup: true
+  occ_aware_start_epoch: 8
+
+  # Delay + slower ramp for SAM constraints
+  sam_loss_start_epoch: 7
+  sam_loss_ramp_epochs: 15
+  sam_loss_scale: 1.0
+
+  # Softer SAM losses
+  homography_smooth: 0.015
+  boundary_sharpness: 0.010
+  object_variance: 0.010
+  segment_consistency: 0.0
+  boundary_aware_smooth: 0.015
+
+optim:
+  lr: 8.0e-5
+  weight_decay: 1.0e-4
+  epochs: 60
+  warmup_epochs: 5
+  clip: 0.5
+  accum_steps: 1
+  scheduler:
+    type: onecycle
+    max_lr: 1.2e-4
+    pct_start: 0.20
+
+logging:
+  use_tb: true
+  tb_dir: tb_v4_unsamflow_strategy_v2
+  log_every: 50
+
+validation:
+  every_n_epochs: 1
+
+ckpt:
+  save_every: 5
+  keep_last: 3
+  save_best: true

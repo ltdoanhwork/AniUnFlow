@@ -104,12 +104,14 @@ class LatentCostMemoryV3(nn.Module):
         heads: int = 4,
         use_segment_cross_attn: bool = True,
         memory_momentum: float = 0.8,
+        segment_cross_attn_every: int = 2,
     ):
         super().__init__()
         self.token_dim = token_dim
         self.depth = depth
         self.memory_momentum = memory_momentum
         self.use_segment_cross_attn = use_segment_cross_attn
+        self.segment_cross_attn_every = max(1, int(segment_cross_attn_every))
         
         # Main transformer blocks
         self.blocks = nn.ModuleList([
@@ -118,9 +120,10 @@ class LatentCostMemoryV3(nn.Module):
         
         # Segment cross-attention (after every 2 blocks)
         if use_segment_cross_attn:
+            num_cross_blocks = depth // self.segment_cross_attn_every
             self.seg_cross_attn = nn.ModuleList([
                 SegmentCrossAttention(token_dim, heads)
-                for _ in range(depth // 2)
+                for _ in range(num_cross_blocks)
             ])
         
         # Memory state (detached, not trainable)
@@ -181,9 +184,12 @@ class LatentCostMemoryV3(nn.Module):
                 for block_idx, block in enumerate(self.blocks):
                     x = block(x, attn_mask=bias_t)
                     
-                    # Apply segment cross-attention every 2 blocks
+                    # Apply segment cross-attention at configured interval.
                     if self.use_segment_cross_attn and seg_tok_t is not None:
-                        if (block_idx + 1) % 2 == 0 and seg_attn_idx < len(self.seg_cross_attn):
+                        if (
+                            (block_idx + 1) % self.segment_cross_attn_every == 0
+                            and seg_attn_idx < len(self.seg_cross_attn)
+                        ):
                             x = self.seg_cross_attn[seg_attn_idx](x, seg_tok_t)
                             seg_attn_idx += 1
                 
@@ -209,10 +215,13 @@ def build_lcm_v3(cfg: dict) -> LatentCostMemoryV3:
     """Build LCM V3 from config."""
     model_cfg = cfg.get('model', {}).get('args', {})
     sam_cfg = cfg.get('sam_guidance', {})
+    if not sam_cfg:
+        sam_cfg = cfg.get('sam', {})
     
     return LatentCostMemoryV3(
         token_dim=model_cfg.get('token_dim', 192),
         depth=model_cfg.get('lcm_depth', 6),
         heads=model_cfg.get('lcm_heads', 4),
         use_segment_cross_attn=sam_cfg.get('attention_bias', True),
+        segment_cross_attn_every=sam_cfg.get('segment_cross_attn_every', 2),
     )
