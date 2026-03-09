@@ -119,14 +119,21 @@ class SepConvGRU(nn.Module):
 
 
 class BasicMotionEncoder(nn.Module):
-    def __init__(self, corr_levels: int = 4, corr_radius: int = 4):
+    def __init__(self, corr_levels: int = 4, corr_radius: int = 4, motion_dim: int = 128):
         super().__init__()
         cor_planes = corr_levels * (2 * corr_radius + 1) ** 2
-        self.convc1 = nn.Conv2d(cor_planes, 192, 1, padding=0)
-        self.convc2 = nn.Conv2d(192, 128, 3, padding=1)
-        self.convf1 = nn.Conv2d(2, 64, 7, padding=3)
-        self.convf2 = nn.Conv2d(64, 32, 3, padding=1)
-        self.conv = nn.Conv2d(128 + 32, 126, 3, padding=1)
+        motion_dim = max(8, int(motion_dim))
+        core_dim = max(6, motion_dim - 2)
+        corr_mid = max(64, motion_dim * 2)
+        corr_out = max(48, motion_dim)
+        flow_mid = max(24, motion_dim // 2)
+        flow_out = max(16, motion_dim // 4)
+
+        self.convc1 = nn.Conv2d(cor_planes, corr_mid, 1, padding=0)
+        self.convc2 = nn.Conv2d(corr_mid, corr_out, 3, padding=1)
+        self.convf1 = nn.Conv2d(2, flow_mid, 7, padding=3)
+        self.convf2 = nn.Conv2d(flow_mid, flow_out, 3, padding=1)
+        self.conv = nn.Conv2d(corr_out + flow_out, core_dim, 3, padding=1)
 
     def forward(self, flow: torch.Tensor, corr: torch.Tensor) -> torch.Tensor:
         cor = F.relu(self.convc1(corr))
@@ -138,9 +145,15 @@ class BasicMotionEncoder(nn.Module):
 
 
 class SAMGatedMotionEncoder(nn.Module):
-    def __init__(self, corr_levels: int, corr_radius: int, boundary_gate_strength: float = 0.3):
+    def __init__(
+        self,
+        corr_levels: int,
+        corr_radius: int,
+        boundary_gate_strength: float = 0.3,
+        motion_dim: int = 128,
+    ):
         super().__init__()
-        self.encoder = BasicMotionEncoder(corr_levels, corr_radius)
+        self.encoder = BasicMotionEncoder(corr_levels, corr_radius, motion_dim=motion_dim)
         self.boundary_gate = nn.Sequential(
             nn.Conv2d(1, 16, 3, padding=1),
             nn.GELU(),
@@ -169,6 +182,7 @@ class HybridUpdateBlock(nn.Module):
         self,
         hidden_dim: int = 128,
         context_dim: int = 128,
+        motion_dim: int = 128,
         corr_levels: int = 4,
         corr_radius: int = 4,
         boundary_gate_strength: float = 0.3,
@@ -178,15 +192,16 @@ class HybridUpdateBlock(nn.Module):
             corr_levels=corr_levels,
             corr_radius=corr_radius,
             boundary_gate_strength=boundary_gate_strength,
+            motion_dim=motion_dim,
         )
-        self.gru = SepConvGRU(hidden_dim=hidden_dim, input_dim=context_dim + 128)
-        self.flow_head = FlowHead(hidden_dim, hidden_dim=256)
+        self.gru = SepConvGRU(hidden_dim=hidden_dim, input_dim=context_dim + motion_dim)
+        self.flow_head = FlowHead(hidden_dim, hidden_dim=max(128, hidden_dim * 2))
         self.mask_head = nn.Sequential(
-            nn.Conv2d(hidden_dim, 256, 3, padding=1),
+            nn.Conv2d(hidden_dim, max(128, hidden_dim * 2), 3, padding=1),
             nn.ReLU(inplace=True),
-            nn.Conv2d(256, 4 * 9, 1, padding=0),  # 2x convex upsampling
+            nn.Conv2d(max(128, hidden_dim * 2), 4 * 9, 1, padding=0),  # 2x convex upsampling
         )
-        self.segment_gate = nn.Conv2d(1, context_dim + 128, 3, padding=1)
+        self.segment_gate = nn.Conv2d(1, context_dim + motion_dim, 3, padding=1)
         self.segment_gate_strength = float(boundary_gate_strength)
 
     def forward(
@@ -241,6 +256,8 @@ class IterativeFlowRefiner(nn.Module):
         prior_dim: int,
         hidden_dim: int = 128,
         context_dim: int = 128,
+        feature_dim: int = 128,
+        motion_dim: int = 128,
         corr_levels: int = 4,
         corr_radius: int = 4,
         iters: int = 10,
@@ -254,8 +271,9 @@ class IterativeFlowRefiner(nn.Module):
         self.corr_radius = corr_radius
         self.iters = int(iters)
         self.use_convex_upsampler = bool(use_convex_upsampler)
+        self.feature_dim = max(16, int(feature_dim))
 
-        self.feature_proj = nn.Conv2d(feat_in_dim, 128, 1)
+        self.feature_proj = nn.Conv2d(feat_in_dim, self.feature_dim, 1)
         self.context_encoder = nn.Sequential(
             nn.Conv2d(context_in_dim, hidden_dim + context_dim, 3, padding=1),
             nn.GELU(),
@@ -269,6 +287,7 @@ class IterativeFlowRefiner(nn.Module):
         self.update_block = HybridUpdateBlock(
             hidden_dim=hidden_dim,
             context_dim=context_dim,
+            motion_dim=motion_dim,
             corr_levels=corr_levels,
             corr_radius=corr_radius,
             boundary_gate_strength=boundary_gate_strength,

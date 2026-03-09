@@ -16,22 +16,28 @@ data:
   sam_mask_dir: data/AnimeRun_v2/SAM_Masks_v2
   val_load_sam_masks: true
   val_sam_mask_dir: data/AnimeRun_v2/SAM_Masks_v2
-  batch_size: 8
+  batch_size: 4
   num_workers: 4
 
 model:
   backbone: v4_5_hybrid_sam
-  enc_channels: 32
+  enc_channels: 24
   enc_out_channels: 64
-  token_dim: 128
+  token_dim: 96
   num_heads: 4
-  lcm_depth: 4
+  lcm_depth: 3
   lcm_heads: 4
   gtr_depth: 1
   gtr_heads: 4
   iters_per_level: 3
-  refiner_iters: 10
+  refiner_iters: 8
   use_convex_upsampler: true
+  refiner_hidden_dim: 96
+  refiner_context_dim: 96
+  refiner_feature_dim: 96
+  refiner_motion_dim: 96
+  refiner_corr_levels: 3
+  refiner_corr_radius: 3
 
 sam:
   enabled: true
@@ -48,7 +54,7 @@ sam:
   feature_scales: [8, 16]
   num_segments: 32
   add_mask_corr: false
-  matcher_topk: 96
+  matcher_topk: 64
   segment_cross_attn_every: 2
   mask_corr_weight_init: 0.5
   boundary_gate_strength: 0.3

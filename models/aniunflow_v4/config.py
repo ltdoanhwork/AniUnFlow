@@ -100,6 +100,12 @@ class ModelConfig:
     # V4.5 iterative refiner
     refiner_iters: int = 10
     use_convex_upsampler: bool = True
+    refiner_hidden_dim: int = 128
+    refiner_context_dim: int = 128
+    refiner_feature_dim: int = 128
+    refiner_motion_dim: int = 128
+    refiner_corr_levels: int = 4
+    refiner_corr_radius: int = 4
     
     # Dropout
     dropout: float = 0.0

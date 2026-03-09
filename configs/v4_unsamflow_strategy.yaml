@@ -20,16 +20,16 @@ data:
   keep_aspect: false
   load_sam_masks: true
   sam_mask_dir: data/AnimeRun_v2/SAM_Masks_v2
-  batch_size: 8
+  batch_size: 4
   num_workers: 4
   shuffle: true
   drop_last: true
 
 model:
-  enc_channels: 32
+  enc_channels: 24
   enc_out_channels: 64
-  token_dim: 128
-  lcm_depth: 4
+  token_dim: 96
+  lcm_depth: 3
   lcm_heads: 4
   gtr_depth: 1
   gtr_heads: 4
