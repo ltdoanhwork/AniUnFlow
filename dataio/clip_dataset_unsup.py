@@ -246,7 +246,15 @@ class UnlabeledClipDataset(Dataset):
 
         # build index (seq_id, center_t, stride)
         self.index: List[Tuple[int,int,int]] = []
-        if is_test:
+        self._rebuild_index()
+
+    def __len__(self):
+        return len(self.index)
+
+    def _rebuild_index(self):
+        """Rebuild sample index for current stride range."""
+        self.index = []
+        if self.is_test:
             for sid, seq in enumerate(self.test_seqs):
                 n = len(seq["frames"])
                 s = 1
@@ -256,15 +264,31 @@ class UnlabeledClipDataset(Dataset):
                     right = t + self.L * s
                     if right - left >= 1 and right <= n - 1:
                         self.index.append((sid, t, s))
-        else:
-            for sid, frames in enumerate(self.train_seqs):
-                n = len(frames)
-                for s in range(self.smin, self.smax + 1):
-                    for t in range(self.L * s, n - self.L * s):
-                        self.index.append((sid, t, s))
+            return
 
-    def __len__(self):
-        return len(self.index)
+        for sid, frames in enumerate(self.train_seqs):
+            n = len(frames)
+            for s in range(self.smin, self.smax + 1):
+                for t in range(self.L * s, n - self.L * s):
+                    self.index.append((sid, t, s))
+
+    def set_stride_range(self, stride_min: int, stride_max: int) -> bool:
+        """
+        Update train-time stride range and rebuild index.
+        Returns True if range changed.
+        """
+        if self.is_test:
+            return False
+
+        new_min = max(1, int(stride_min))
+        new_max = max(new_min, int(stride_max))
+        if new_min == self.smin and new_max == self.smax:
+            return False
+
+        self.smin = new_min
+        self.smax = new_max
+        self._rebuild_index()
+        return True
 
     # ------------ clip-level augment (train only) ------------
     def _augment_clip(self, imgs: List[Image.Image]) -> List[Image.Image]:

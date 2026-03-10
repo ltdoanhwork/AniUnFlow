@@ -198,6 +198,12 @@ class SegmentAwareTrainer:
         self.sam_loss_start_epoch = int(_loss_get("sam_loss_start_epoch", None, 1))
         self.sam_loss_ramp_epochs = int(_loss_get("sam_loss_ramp_epochs", None, 0))
         self.sam_loss_scale = float(_loss_get("sam_loss_scale", None, 1.0))
+
+        # Optional long-gap unsupervised objective (t -> t+2).
+        self.long_gap_photo_weight = float(_loss_get("long_gap_photo_weight", None, 0.0))
+        self.long_gap_consistency_weight = float(_loss_get("long_gap_consistency_weight", None, 0.0))
+        self.long_gap_start_epoch = int(_loss_get("long_gap_start_epoch", None, 999))
+        self.long_gap_ramp_epochs = int(_loss_get("long_gap_ramp_epochs", None, 0))
         
         # Segment-aware losses
         self.use_segment_losses = self._has_segment_losses()
@@ -231,7 +237,7 @@ class SegmentAwareTrainer:
         self.sched_per_batch = False
         
         # AMP scaler
-        self.scaler = torch.cuda.amp.GradScaler(enabled=torch.cuda.is_available())
+        self.scaler = torch.amp.GradScaler("cuda", enabled=torch.cuda.is_available())
         self.clip_grad = float(optim_cfg.get("clip", 1.0))
         self.accum_steps = int(optim_cfg.get("accum_steps", 1))
         
@@ -268,6 +274,10 @@ class SegmentAwareTrainer:
         self._early_stop_worse_count = 0
         self._prev_val_metric = None
 
+        # Optional data curriculum for stride range.
+        data_cfg = cfg.get("data", {})
+        self.motion_curriculum = data_cfg.get("motion_curriculum", [])
+
     def _current_sam_scale(self) -> float:
         """Epoch-based SAM loss scaling (for 2-stage training schedules)."""
         if self.current_epoch < self.sam_loss_start_epoch:
@@ -278,6 +288,50 @@ class SegmentAwareTrainer:
         p = (self.current_epoch - self.sam_loss_start_epoch + 1) / float(self.sam_loss_ramp_epochs)
         p = max(0.0, min(1.0, p))
         return self.sam_loss_scale * p
+
+    def _current_long_gap_weights(self) -> Tuple[float, float]:
+        """Epoch-based long-gap loss scaling."""
+        if self.current_epoch < self.long_gap_start_epoch:
+            return 0.0, 0.0
+        if self.long_gap_ramp_epochs <= 0:
+            return self.long_gap_photo_weight, self.long_gap_consistency_weight
+        p = (self.current_epoch - self.long_gap_start_epoch + 1) / float(self.long_gap_ramp_epochs)
+        p = max(0.0, min(1.0, p))
+        return self.long_gap_photo_weight * p, self.long_gap_consistency_weight * p
+
+    @staticmethod
+    def _unwrap_dataset(ds):
+        """Unwrap common wrappers (e.g., Subset) to access base dataset methods."""
+        base = ds
+        while hasattr(base, "dataset"):
+            base = base.dataset
+        return base
+
+    def _apply_motion_curriculum(self, train_loader: DataLoader):
+        """Apply epoch-based stride curriculum if dataset supports it."""
+        if not self.motion_curriculum:
+            return
+
+        target = None
+        for stage in self.motion_curriculum:
+            start = int(stage.get("start_epoch", 1))
+            end = int(stage.get("end_epoch", 10**9))
+            if start <= self.current_epoch <= end:
+                target = (int(stage.get("stride_min", 1)), int(stage.get("stride_max", 1)))
+                break
+        if target is None:
+            return
+
+        ds = self._unwrap_dataset(train_loader.dataset)
+        if not hasattr(ds, "set_stride_range"):
+            return
+
+        changed = ds.set_stride_range(target[0], target[1])
+        if changed:
+            print(
+                f"[Trainer] Motion curriculum epoch {self.current_epoch}: "
+                f"stride {target[0]}..{target[1]} | samples={len(ds)}"
+            )
     
     def _build_model(self) -> nn.Module:
         """Build AniFlowFormer-T model from config."""
@@ -439,6 +493,7 @@ class SegmentAwareTrainer:
             self.current_epoch = epoch
             t0 = time.time()
             self._maybe_freeze_encoder()
+            self._apply_motion_curriculum(train_loader)
             
             # Train one epoch
             train_metrics = self._train_one_epoch(train_loader)
@@ -543,7 +598,7 @@ class SegmentAwareTrainer:
             if "sam_features" in batch:
                 sam_features = batch["sam_features"]
 
-            with torch.cuda.amp.autocast(enabled=torch.cuda.is_available()):
+            with torch.amp.autocast(device_type="cuda", enabled=torch.cuda.is_available()):
                 # Forward pass
                 if isinstance(self.model, AniFlowFormerTV4):
                     # V4 Model: Integrated forward + loss
@@ -561,9 +616,17 @@ class SegmentAwareTrainer:
                         self.disable_occ_during_warmup and self.global_step < self.warmup_steps
                     )
                     use_occ_mask = use_occ_mask and (self.current_epoch >= self.occ_aware_start_epoch)
+                    long_gap_photo_w, long_gap_cons_w = self._current_long_gap_weights()
                     loss_dict = self.base_loss.unsup_bidirectional(
-                        clip, flows_fw, flows_bw, use_occ_mask=use_occ_mask
+                        clip,
+                        flows_fw,
+                        flows_bw,
+                        use_occ_mask=use_occ_mask,
+                        long_gap_photo_weight=long_gap_photo_w,
+                        long_gap_consistency_weight=long_gap_cons_w,
                     )
+                    loss_dict["long_gap_photo_w"] = long_gap_photo_w
+                    loss_dict["long_gap_cons_w"] = long_gap_cons_w
                     total_loss = loss_dict["total"]
 
                     # Add SAM losses from model output
@@ -592,9 +655,17 @@ class SegmentAwareTrainer:
                         self.disable_occ_during_warmup and self.global_step < self.warmup_steps
                     )
                     use_occ_mask = use_occ_mask and (self.current_epoch >= self.occ_aware_start_epoch)
+                    long_gap_photo_w, long_gap_cons_w = self._current_long_gap_weights()
                     loss_dict = self.base_loss.unsup_bidirectional(
-                        clip, flows_fw, flows_bw, use_occ_mask=use_occ_mask
+                        clip,
+                        flows_fw,
+                        flows_bw,
+                        use_occ_mask=use_occ_mask,
+                        long_gap_photo_weight=long_gap_photo_w,
+                        long_gap_consistency_weight=long_gap_cons_w,
                     )
+                    loss_dict["long_gap_photo_w"] = long_gap_photo_w
+                    loss_dict["long_gap_cons_w"] = long_gap_cons_w
                     total_loss = loss_dict["total"]
 
                     # Add segment-aware losses (V3 style)
@@ -747,7 +818,7 @@ class SegmentAwareTrainer:
                 else:
                     segment_masks = self.sam_guidance.extract_segment_masks(clip)
             
-            with torch.cuda.amp.autocast(enabled=torch.cuda.is_available()):
+            with torch.amp.autocast(device_type="cuda", enabled=torch.cuda.is_available()):
                 out = self.model(clip, sam_masks=segment_masks)
             
             flows = out["flows"]

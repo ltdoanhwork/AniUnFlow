@@ -106,6 +106,13 @@ class ModelConfig:
     refiner_motion_dim: int = 128
     refiner_corr_levels: int = 4
     refiner_corr_radius: int = 4
+    refiner_gradient_checkpointing: bool = False
+    refiner_delta_clip: float = 0.0
+    refiner_use_prior_flow_init: bool = True
+    refiner_prior_flow_init_scale: float = 1.0
+    refiner_prior_flow_init_clip: float = 0.0
+    refiner_delta_damping: float = 1.0
+    refiner_delta_damping_decay: float = 1.0
     
     # Dropout
     dropout: float = 0.0

@@ -6,6 +6,7 @@ from typing import Optional
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.utils.checkpoint as checkpoint_utils
 
 
 def _coords_grid(batch: int, ht: int, wd: int, device: torch.device) -> torch.Tensor:
@@ -263,6 +264,13 @@ class IterativeFlowRefiner(nn.Module):
         iters: int = 10,
         use_convex_upsampler: bool = True,
         boundary_gate_strength: float = 0.3,
+        use_gradient_checkpointing: bool = False,
+        delta_clip: float = 0.0,
+        use_prior_flow_init: bool = True,
+        prior_flow_init_scale: float = 1.0,
+        prior_flow_init_clip: float = 0.0,
+        delta_damping: float = 1.0,
+        delta_damping_decay: float = 1.0,
     ):
         super().__init__()
         self.hidden_dim = hidden_dim
@@ -272,6 +280,13 @@ class IterativeFlowRefiner(nn.Module):
         self.iters = int(iters)
         self.use_convex_upsampler = bool(use_convex_upsampler)
         self.feature_dim = max(16, int(feature_dim))
+        self.use_gradient_checkpointing = bool(use_gradient_checkpointing)
+        self.delta_clip = float(delta_clip)
+        self.use_prior_flow_init = bool(use_prior_flow_init)
+        self.prior_flow_init_scale = float(prior_flow_init_scale)
+        self.prior_flow_init_clip = float(prior_flow_init_clip)
+        self.delta_damping = float(delta_damping)
+        self.delta_damping_decay = float(delta_damping_decay)
 
         self.feature_proj = nn.Conv2d(feat_in_dim, self.feature_dim, 1)
         self.context_encoder = nn.Sequential(
@@ -323,24 +338,57 @@ class IterativeFlowRefiner(nn.Module):
         coords0 = _coords_grid(b, h, w, feat1.device)
         coords1 = _coords_grid(b, h, w, feat1.device)
 
-        if prior is not None:
+        if prior is not None and self.use_prior_flow_init:
             if prior.shape[2:] != (h, w):
                 prior = F.interpolate(prior, size=(h, w), mode="bilinear", align_corners=False)
-            coords1 = coords1 + self.prior_to_flow(prior)
+            init_flow = self.prior_to_flow(prior)
+            if self.prior_flow_init_clip > 0:
+                init_flow = init_flow.clamp(
+                    min=-self.prior_flow_init_clip,
+                    max=self.prior_flow_init_clip,
+                )
+            coords1 = coords1 + self.prior_flow_init_scale * init_flow
 
         up_mask = None
-        for _ in range(n_iters):
+        for iter_idx in range(n_iters):
             coords1_detached = coords1.detach()
             corr = corr_fn(coords1_detached)
             flow = coords1_detached - coords0
-            net, up_mask, delta_flow = self.update_block(
-                net,
-                inp,
-                corr,
-                flow,
-                boundary=boundary,
-                segment=segment,
-            )
+
+            if self.use_gradient_checkpointing and self.training:
+                def _update_fn(net_t, inp_t, corr_t, flow_t):
+                    return self.update_block(
+                        net_t,
+                        inp_t,
+                        corr_t,
+                        flow_t,
+                        boundary=boundary,
+                        segment=segment,
+                    )
+
+                net, up_mask, delta_flow = checkpoint_utils.checkpoint(
+                    _update_fn,
+                    net,
+                    inp,
+                    corr,
+                    flow,
+                    use_reentrant=False,
+                )
+            else:
+                net, up_mask, delta_flow = self.update_block(
+                    net,
+                    inp,
+                    corr,
+                    flow,
+                    boundary=boundary,
+                    segment=segment,
+                )
+
+            step_scale = self.delta_damping * (self.delta_damping_decay ** iter_idx)
+            if step_scale != 1.0:
+                delta_flow = delta_flow * step_scale
+            if self.delta_clip > 0:
+                delta_flow = delta_flow.clamp(min=-self.delta_clip, max=self.delta_clip)
             coords1 = coords1 + delta_flow
 
         flow8 = coords1 - coords0

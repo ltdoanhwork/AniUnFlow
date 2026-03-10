@@ -133,6 +133,23 @@ class AniFlowFormerTV4(nn.Module):
                     iters=int(getattr(self.model_cfg, "refiner_iters", 10)),
                     use_convex_upsampler=bool(getattr(self.model_cfg, "use_convex_upsampler", True)),
                     boundary_gate_strength=float(getattr(self.sam_cfg, "boundary_gate_strength", 0.3)),
+                    use_gradient_checkpointing=bool(
+                        getattr(self.model_cfg, "refiner_gradient_checkpointing", False)
+                    ),
+                    delta_clip=float(getattr(self.model_cfg, "refiner_delta_clip", 0.0)),
+                    use_prior_flow_init=bool(
+                        getattr(self.model_cfg, "refiner_use_prior_flow_init", True)
+                    ),
+                    prior_flow_init_scale=float(
+                        getattr(self.model_cfg, "refiner_prior_flow_init_scale", 1.0)
+                    ),
+                    prior_flow_init_clip=float(
+                        getattr(self.model_cfg, "refiner_prior_flow_init_clip", 0.0)
+                    ),
+                    delta_damping=float(getattr(self.model_cfg, "refiner_delta_damping", 1.0)),
+                    delta_damping_decay=float(
+                        getattr(self.model_cfg, "refiner_delta_damping_decay", 1.0)
+                    ),
                 )
 
         # SAM components

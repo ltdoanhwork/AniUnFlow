@@ -205,6 +205,8 @@ class UnsupervisedFlowLoss:
         flows_fw: List[torch.Tensor],    # len = T-1, each [B,2,h,w]
         flows_bw: List[torch.Tensor],    # len = T-1, each [B,2,h,w]
         use_occ_mask: bool = True,       # Whether to use occlusion-aware masking
+        long_gap_photo_weight: float = 0.0,
+        long_gap_consistency_weight: float = 0.0,
     ) -> Dict[str, torch.Tensor]:
         """
         Compute bidirectional unsupervised loss for a clip:
@@ -220,6 +222,8 @@ class UnsupervisedFlowLoss:
         total_smooth = 0.0
         total_cons = 0.0
         total_mag_reg = 0.0
+        total_long_gap_photo = 0.0
+        total_long_gap_cons = 0.0
         count = 0
 
         for k in range(T - 1):
@@ -270,13 +274,54 @@ class UnsupervisedFlowLoss:
             total_cons = total_cons / count
             total_mag_reg = total_mag_reg / count
 
-        total = total_photo + total_smooth + total_cons + total_mag_reg
+        # Optional long-gap objective: enforce consistency over t -> t+2.
+        long_gap_count = 0
+        if (long_gap_photo_weight > 0 or long_gap_consistency_weight > 0) and (T >= 3):
+            for k in range(T - 2):
+                # Forward composition: F(k->k+2) = F(k->k+1) + warp(F(k+1->k+2), F(k->k+1))
+                F_k_k1 = flows_fw[k]
+                F_k1_k2 = flows_fw[k + 1]
+                F_k_k2 = F_k_k1 + warp(F_k1_k2, F_k_k1)
+                F_k_k2_up = self._upsample_flow(F_k_k2, H, W)
+
+                I_k = clip[:, k]
+                I_k2 = clip[:, k + 2]
+
+                if long_gap_photo_weight > 0:
+                    lg_photo = self._photometric_pair(I_k, I_k2, F_k_k2_up)
+                    total_long_gap_photo += lg_photo
+
+                if long_gap_consistency_weight > 0:
+                    # Backward composition: F(k+2->k)
+                    F_k2_k1 = flows_bw[k + 1]
+                    F_k1_k = flows_bw[k]
+                    F_k2_k = F_k2_k1 + warp(F_k1_k, F_k2_k1)
+                    F_k2_k_up = self._upsample_flow(F_k2_k, H, W)
+                    lg_cons = self._fb_consistency_pair(F_k_k2_up, F_k2_k_up)
+                    total_long_gap_cons += lg_cons
+
+                long_gap_count += 1
+
+        if long_gap_count > 0:
+            total_long_gap_photo = total_long_gap_photo / long_gap_count
+            total_long_gap_cons = total_long_gap_cons / long_gap_count
+
+        total = (
+            total_photo
+            + total_smooth
+            + total_cons
+            + total_mag_reg
+            + long_gap_photo_weight * total_long_gap_photo
+            + long_gap_consistency_weight * total_long_gap_cons
+        )
 
         return {
             "photo": total_photo,
             "smooth": total_smooth,
             "cons": total_cons,
             "mag_reg": total_mag_reg,
+            "long_gap_photo": total_long_gap_photo,
+            "long_gap_cons": total_long_gap_cons,
             "total": total,
         }
 

@@ -1,0 +1,140 @@
+# V4.6 Fast-Upgrade: motion curriculum + long-gap objective + refiner stabilization
+
+seed: 1337
+workspace: workspaces/v4_6_hybrid_sam_longgap
+
+data:
+  name: animerun_clip
+  train_root: data/AnimeRun_v2/
+  val_root: data/AnimeRun_v2/
+  T: 3
+  stride_min: 1
+  stride_max: 3
+  # Epoch-based motion curriculum
+  motion_curriculum:
+    - start_epoch: 1
+      end_epoch: 2
+      stride_min: 1
+      stride_max: 1
+    - start_epoch: 3
+      end_epoch: 6
+      stride_min: 1
+      stride_max: 2
+    - start_epoch: 7
+      end_epoch: 10
+      stride_min: 1
+      stride_max: 3
+  crop_size: [256, 512]
+  resize: true
+  keep_aspect: false
+  load_sam_masks: true
+  sam_mask_dir: data/AnimeRun_v2/SAM_Masks_v2
+  val_load_sam_masks: true
+  val_sam_mask_dir: data/AnimeRun_v2/SAM_Masks_v2
+  batch_size: 4
+  num_workers: 4
+  shuffle: true
+  drop_last: true
+
+model:
+  backbone: v4_5_hybrid_sam
+  enc_channels: 24
+  enc_out_channels: 64
+  token_dim: 112
+  num_heads: 4
+  lcm_depth: 3
+  lcm_heads: 4
+  gtr_depth: 1
+  gtr_heads: 4
+  iters_per_level: 3
+  refiner_iters: 10
+  use_convex_upsampler: true
+  refiner_hidden_dim: 112
+  refiner_context_dim: 112
+  refiner_feature_dim: 112
+  refiner_motion_dim: 112
+  refiner_corr_levels: 3
+  refiner_corr_radius: 4
+  refiner_gradient_checkpointing: true
+  refiner_delta_clip: 1.5
+
+sam:
+  enabled: true
+  use_encoder_features: true
+  use_mask_guidance: true
+  feature_concat: true
+  attention_bias: true
+  cost_modulation: true
+  object_pooling: true
+  encoder_checkpoint: models/sam2/checkpoints/sam2.1_hiera_tiny.pt
+  encoder_config: configs/sam2.1/sam2.1_hiera_t.yaml
+  encoder_freeze: true
+  feature_dim: 256
+  feature_scales: [8, 16]
+  num_segments: 32
+  mask_cache_dir: data/AnimeRun_v2/SAM_Masks_v2
+  add_mask_corr: true
+  mask_corr_aggregation: residual
+  mask_corr_weight: 1.0
+  mask_corr_min_pixels: 8
+  matcher_topk: 80
+  segment_cross_attn_every: 2
+  mask_corr_weight_init: 0.5
+  boundary_gate_strength: 0.3
+
+loss:
+  photo: 1.0
+  photo_ssim_alpha: 0.85
+  smooth: 0.02
+  consistency: 0.02
+
+  mag_reg: 0.10
+  min_flow_mag: 0.60
+  warmup_steps: 2500
+  disable_occ_during_warmup: true
+
+  occ_aware_start_epoch: 10
+  sam_loss_start_epoch: 10
+  sam_loss_ramp_epochs: 15
+  sam_loss_scale: 1.0
+
+  # Long-gap unsupervised objective (t -> t+2)
+  long_gap_photo_weight: 0.12
+  long_gap_consistency_weight: 0.03
+  long_gap_start_epoch: 5
+  long_gap_ramp_epochs: 6
+
+  homography_smooth: 0.015
+  boundary_sharpness: 0.015
+  object_variance: 0.015
+  segment_consistency: 0.0
+  boundary_aware_smooth: 0.02
+
+optim:
+  lr: 6.0e-5
+  weight_decay: 1.0e-4
+  epochs: 10
+  warmup_epochs: 4
+  clip: 0.5
+  accum_steps: 1
+  freeze_encoder_epoch: 9
+  freeze_encoder_levels: [lvl1]
+  scheduler:
+    type: onecycle
+    max_lr: 8.0e-5
+    pct_start: 0.20
+
+logging:
+  use_tb: true
+  tb_dir: tb_v4_6_hybrid_sam_longgap
+  log_every: 50
+
+validation:
+  every_n_epochs: 1
+  early_stop_delta: 0.7
+  early_stop_patience: 3
+
+ckpt:
+  save_every: 2
+  keep_last: 3
+  save_best: true
