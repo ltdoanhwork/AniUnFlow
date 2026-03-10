@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+export CONDA_NO_PLUGINS=true
 
 ENV_NAME="${ENV_NAME:-unflow_animerun_tf}"
 EXPERIMENT="${EXPERIMENT:-unflow_animerun_c_medium}"

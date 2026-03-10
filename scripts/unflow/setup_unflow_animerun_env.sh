@@ -2,8 +2,10 @@
 set -euo pipefail
 
 ENV_NAME="${1:-unflow_animerun_tf}"
+export CONDA_NO_PLUGINS=true
+export CONDA_SOLVER=classic
 
-if conda env list | awk '{print $1}' | grep -qx "${ENV_NAME}"; then
+if conda run -n "${ENV_NAME}" python -V >/dev/null 2>&1; then
   echo "Conda env '${ENV_NAME}' already exists. Reusing it."
 else
   conda create -y -n "${ENV_NAME}" python=3.10 pip
