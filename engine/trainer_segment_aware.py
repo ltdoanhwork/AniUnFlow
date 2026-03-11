@@ -204,6 +204,7 @@ class SegmentAwareTrainer:
         self.long_gap_consistency_weight = float(_loss_get("long_gap_consistency_weight", None, 0.0))
         self.long_gap_start_epoch = int(_loss_get("long_gap_start_epoch", None, 999))
         self.long_gap_ramp_epochs = int(_loss_get("long_gap_ramp_epochs", None, 0))
+        self.skip_sam_compute_until_epoch = int(_loss_get("skip_sam_compute_until_epoch", None, 1))
         
         # Segment-aware losses
         self.use_segment_losses = self._has_segment_losses()
@@ -277,6 +278,20 @@ class SegmentAwareTrainer:
         # Optional data curriculum for stride range.
         data_cfg = cfg.get("data", {})
         self.motion_curriculum = data_cfg.get("motion_curriculum", [])
+        runtime_cfg = cfg.get("runtime", {})
+        self.runtime_schedule = runtime_cfg.get("schedule", [])
+        self._runtime_state: Dict[str, Any] = {
+            "stage_idx": None,
+            "stride": None,
+            "refiner_iters": None,
+            "matcher_topk": None,
+            "refiner_gradient_checkpointing": None,
+        }
+        self._runtime_overrides: Dict[str, Optional[bool]] = {
+            "enable_occ_aware": None,
+            "enable_long_gap": None,
+            "enable_sam_losses": None,
+        }
 
     def _current_sam_scale(self) -> float:
         """Epoch-based SAM loss scaling (for 2-stage training schedules)."""
@@ -300,6 +315,109 @@ class SegmentAwareTrainer:
         return self.long_gap_photo_weight * p, self.long_gap_consistency_weight * p
 
     @staticmethod
+    def _set_matcher_topk(module: Optional[nn.Module], topk: int):
+        """Set top-k on all matcher submodules that expose a `topk` attribute."""
+        if module is None:
+            return
+        for sub in module.modules():
+            if hasattr(sub, "topk"):
+                try:
+                    sub.topk = int(topk)
+                except Exception:
+                    continue
+
+    def _current_runtime_stage(self) -> Tuple[Optional[int], Optional[Dict[str, Any]]]:
+        """Return active runtime stage (index, dict) for current epoch."""
+        if not self.runtime_schedule:
+            return None, None
+        for idx, stage in enumerate(self.runtime_schedule):
+            start = int(stage.get("start_epoch", 1))
+            end = int(stage.get("end_epoch", 10**9))
+            if start <= self.current_epoch <= end:
+                return idx, stage
+        return None, None
+
+    def _apply_stride_range(self, train_loader: DataLoader, stride_min: int, stride_max: int, source: str):
+        ds = self._unwrap_dataset(train_loader.dataset)
+        if not hasattr(ds, "set_stride_range"):
+            return
+        changed = ds.set_stride_range(int(stride_min), int(stride_max))
+        if changed:
+            print(
+                f"[Trainer] {source} epoch {self.current_epoch}: "
+                f"stride {int(stride_min)}..{int(stride_max)} | samples={len(ds)}"
+            )
+
+    def _apply_runtime_schedule(self, train_loader: DataLoader):
+        """Apply epoch-based runtime overrides (iters/topk/stride/loss toggles)."""
+        stage_idx, stage = self._current_runtime_stage()
+        if stage is None:
+            self._runtime_overrides = {
+                "enable_occ_aware": None,
+                "enable_long_gap": None,
+                "enable_sam_losses": None,
+            }
+            return
+
+        self._runtime_overrides = {
+            "enable_occ_aware": stage.get("enable_occ_aware", None),
+            "enable_long_gap": stage.get("enable_long_gap", None),
+            "enable_sam_losses": stage.get("enable_sam_losses", None),
+        }
+
+        changed_msgs: List[str] = []
+
+        # Per-stage stride override.
+        if "stride_min" in stage and "stride_max" in stage:
+            stride_pair = (int(stage["stride_min"]), int(stage["stride_max"]))
+            if self._runtime_state.get("stride") != stride_pair:
+                self._runtime_state["stride"] = stride_pair
+                self._apply_stride_range(train_loader, stride_pair[0], stride_pair[1], "Runtime schedule")
+                changed_msgs.append(f"stride={stride_pair[0]}..{stride_pair[1]}")
+
+        # Refiner iterations override (AniFlowFormerTV4 only).
+        refiner_iters = stage.get("refiner_iters", None)
+        if refiner_iters is not None and isinstance(self.model, AniFlowFormerTV4):
+            refiner_iters = int(refiner_iters)
+            if self._runtime_state.get("refiner_iters") != refiner_iters:
+                self._runtime_state["refiner_iters"] = refiner_iters
+                if hasattr(self.model, "model_cfg"):
+                    self.model.model_cfg.refiner_iters = refiner_iters
+                if getattr(self.model, "iterative_refiner", None) is not None:
+                    self.model.iterative_refiner.iters = refiner_iters
+                changed_msgs.append(f"refiner_iters={refiner_iters}")
+
+        # Matcher top-k override.
+        matcher_topk = stage.get("matcher_topk", None)
+        if matcher_topk is not None and isinstance(self.model, AniFlowFormerTV4):
+            matcher_topk = int(matcher_topk)
+            if self._runtime_state.get("matcher_topk") != matcher_topk:
+                self._runtime_state["matcher_topk"] = matcher_topk
+                self._set_matcher_topk(getattr(self.model, "tokenizer", None), matcher_topk)
+                self._set_matcher_topk(getattr(self.model, "tokenizer_v45_main", None), matcher_topk)
+                self._set_matcher_topk(getattr(self.model, "tokenizer_v45_aux", None), matcher_topk)
+                changed_msgs.append(f"matcher_topk={matcher_topk}")
+
+        # Runtime toggle for refiner checkpointing.
+        refiner_ckpt = stage.get("refiner_gradient_checkpointing", None)
+        if refiner_ckpt is not None and isinstance(self.model, AniFlowFormerTV4):
+            refiner_ckpt = bool(refiner_ckpt)
+            if self._runtime_state.get("refiner_gradient_checkpointing") != refiner_ckpt:
+                self._runtime_state["refiner_gradient_checkpointing"] = refiner_ckpt
+                if hasattr(self.model, "model_cfg"):
+                    self.model.model_cfg.refiner_gradient_checkpointing = refiner_ckpt
+                if getattr(self.model, "iterative_refiner", None) is not None:
+                    self.model.iterative_refiner.use_gradient_checkpointing = refiner_ckpt
+                changed_msgs.append(f"refiner_ckpt={refiner_ckpt}")
+
+        if self._runtime_state.get("stage_idx") != stage_idx:
+            self._runtime_state["stage_idx"] = stage_idx
+            changed_msgs.insert(0, f"stage={stage_idx}")
+
+        if changed_msgs:
+            print(f"[Trainer] Runtime schedule epoch {self.current_epoch}: " + ", ".join(changed_msgs))
+
+    @staticmethod
     def _unwrap_dataset(ds):
         """Unwrap common wrappers (e.g., Subset) to access base dataset methods."""
         base = ds
@@ -309,6 +427,10 @@ class SegmentAwareTrainer:
 
     def _apply_motion_curriculum(self, train_loader: DataLoader):
         """Apply epoch-based stride curriculum if dataset supports it."""
+        stage_idx, stage = self._current_runtime_stage()
+        if stage_idx is not None and stage is not None and "stride_min" in stage and "stride_max" in stage:
+            return
+
         if not self.motion_curriculum:
             return
 
@@ -322,16 +444,7 @@ class SegmentAwareTrainer:
         if target is None:
             return
 
-        ds = self._unwrap_dataset(train_loader.dataset)
-        if not hasattr(ds, "set_stride_range"):
-            return
-
-        changed = ds.set_stride_range(target[0], target[1])
-        if changed:
-            print(
-                f"[Trainer] Motion curriculum epoch {self.current_epoch}: "
-                f"stride {target[0]}..{target[1]} | samples={len(ds)}"
-            )
+        self._apply_stride_range(train_loader, target[0], target[1], "Motion curriculum")
     
     def _build_model(self) -> nn.Module:
         """Build AniFlowFormer-T model from config."""
@@ -493,6 +606,7 @@ class SegmentAwareTrainer:
             self.current_epoch = epoch
             t0 = time.time()
             self._maybe_freeze_encoder()
+            self._apply_runtime_schedule(train_loader)
             self._apply_motion_curriculum(train_loader)
             
             # Train one epoch
@@ -601,12 +715,21 @@ class SegmentAwareTrainer:
             with torch.amp.autocast(device_type="cuda", enabled=torch.cuda.is_available()):
                 # Forward pass
                 if isinstance(self.model, AniFlowFormerTV4):
+                    sam_scale = self._current_sam_scale()
+                    if self._runtime_overrides["enable_sam_losses"] is False:
+                        sam_scale = 0.0
+                    compute_sam_losses = (
+                        sam_scale > 0.0
+                        and self.current_epoch >= self.skip_sam_compute_until_epoch
+                    )
+
                     # V4 Model: Integrated forward + loss
                     out_fw = self.model(
                         clip,
                         sam_masks=segment_masks,
                         sam_features=sam_features,
                         return_losses=True,
+                        compute_sam_losses=compute_sam_losses,
                     )
                     flows_fw = out_fw["flows_fw"]
                     flows_bw = out_fw["flows_bw"]
@@ -616,7 +739,16 @@ class SegmentAwareTrainer:
                         self.disable_occ_during_warmup and self.global_step < self.warmup_steps
                     )
                     use_occ_mask = use_occ_mask and (self.current_epoch >= self.occ_aware_start_epoch)
+                    if self._runtime_overrides["enable_occ_aware"] is False:
+                        use_occ_mask = False
+                    if self._runtime_overrides["enable_occ_aware"] is True:
+                        use_occ_mask = not (
+                            self.disable_occ_during_warmup and self.global_step < self.warmup_steps
+                        )
+
                     long_gap_photo_w, long_gap_cons_w = self._current_long_gap_weights()
+                    if self._runtime_overrides["enable_long_gap"] is False:
+                        long_gap_photo_w, long_gap_cons_w = 0.0, 0.0
                     loss_dict = self.base_loss.unsup_bidirectional(
                         clip,
                         flows_fw,
@@ -630,8 +762,7 @@ class SegmentAwareTrainer:
                     total_loss = loss_dict["total"]
 
                     # Add SAM losses from model output
-                    if "sam_losses" in out_fw:
-                        sam_scale = self._current_sam_scale()
+                    if "sam_losses" in out_fw and sam_scale > 0.0:
                         for name, value in out_fw["sam_losses"].items():
                             scaled = value * sam_scale
                             total_loss = total_loss + scaled
@@ -655,7 +786,15 @@ class SegmentAwareTrainer:
                         self.disable_occ_during_warmup and self.global_step < self.warmup_steps
                     )
                     use_occ_mask = use_occ_mask and (self.current_epoch >= self.occ_aware_start_epoch)
+                    if self._runtime_overrides["enable_occ_aware"] is False:
+                        use_occ_mask = False
+                    if self._runtime_overrides["enable_occ_aware"] is True:
+                        use_occ_mask = not (
+                            self.disable_occ_during_warmup and self.global_step < self.warmup_steps
+                        )
                     long_gap_photo_w, long_gap_cons_w = self._current_long_gap_weights()
+                    if self._runtime_overrides["enable_long_gap"] is False:
+                        long_gap_photo_w, long_gap_cons_w = 0.0, 0.0
                     loss_dict = self.base_loss.unsup_bidirectional(
                         clip,
                         flows_fw,

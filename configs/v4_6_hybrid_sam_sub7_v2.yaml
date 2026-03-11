@@ -10,19 +10,6 @@ data:
   T: 3
   stride_min: 1
   stride_max: 3
-  motion_curriculum:
-    - start_epoch: 1
-      end_epoch: 10
-      stride_min: 1
-      stride_max: 1
-    - start_epoch: 11
-      end_epoch: 25
-      stride_min: 1
-      stride_max: 2
-    - start_epoch: 26
-      end_epoch: 60
-      stride_min: 1
-      stride_max: 3
   crop_size: [256, 512]
   resize: true
   keep_aspect: false
@@ -30,8 +17,13 @@ data:
   sam_mask_dir: data/AnimeRun_v2/SAM_Masks_v2
   val_load_sam_masks: true
   val_sam_mask_dir: data/AnimeRun_v2/SAM_Masks_v2
-  batch_size: 4
+  batch_size: 8
   num_workers: 4
+  persistent_workers: true
+  prefetch_factor: 4
+  val_num_workers: 2
+  val_persistent_workers: true
+  val_prefetch_factor: 2
   shuffle: true
   drop_last: true
 
@@ -47,7 +39,7 @@ model:
   gtr_heads: 4
   iters_per_level: 3
 
-  refiner_iters: 8
+  refiner_iters: 4
   use_convex_upsampler: true
   refiner_hidden_dim: 128
   refiner_context_dim: 128
@@ -55,7 +47,7 @@ model:
   refiner_motion_dim: 128
   refiner_corr_levels: 3
   refiner_corr_radius: 4
-  refiner_gradient_checkpointing: true
+  refiner_gradient_checkpointing: false
 
   refiner_delta_clip: 1.0
   refiner_use_prior_flow_init: true
@@ -66,7 +58,7 @@ model:
 
 sam:
   enabled: true
-  use_encoder_features: true
+  use_encoder_features: false
   use_mask_guidance: true
   feature_concat: true
   attention_bias: true
@@ -84,7 +76,7 @@ sam:
   mask_corr_aggregation: residual
   mask_corr_weight: 1.0
   mask_corr_min_pixels: 8
-  matcher_topk: 96
+  matcher_topk: 64
   segment_cross_attn_every: 2
   mask_corr_weight_init: 0.5
   boundary_gate_strength: 0.3
@@ -100,10 +92,11 @@ loss:
   warmup_steps: 3000
   disable_occ_during_warmup: true
 
-  occ_aware_start_epoch: 12
-  sam_loss_start_epoch: 10
+  occ_aware_start_epoch: 20
+  sam_loss_start_epoch: 24
   sam_loss_ramp_epochs: 12
   sam_loss_scale: 1.0
+  skip_sam_compute_until_epoch: 24
 
   homography_smooth: 0.04
   boundary_sharpness: 0.02
@@ -113,8 +106,8 @@ loss:
 
   long_gap_photo_weight: 0.10
   long_gap_consistency_weight: 0.03
-  long_gap_start_epoch: 12
-  long_gap_ramp_epochs: 15
+  long_gap_start_epoch: 22
+  long_gap_ramp_epochs: 10
 
 optim:
   lr: 3.0e-5
@@ -136,9 +129,66 @@ logging:
   log_every: 50
 
 validation:
-  every_n_epochs: 1
+  every_n_epochs: 2
   early_stop_delta: 0.5
   early_stop_patience: 6
+
+runtime:
+  schedule:
+    - start_epoch: 1
+      end_epoch: 18
+      stride_min: 1
+      stride_max: 1
+      refiner_iters: 4
+      matcher_topk: 64
+      enable_occ_aware: false
+      enable_long_gap: false
+      enable_sam_losses: false
+    - start_epoch: 19
+      end_epoch: 19
+      stride_min: 1
+      stride_max: 2
+      refiner_iters: 8
+      matcher_topk: 96
+      enable_occ_aware: false
+      enable_long_gap: false
+      enable_sam_losses: false
+    - start_epoch: 20
+      end_epoch: 21
+      stride_min: 1
+      stride_max: 2
+      refiner_iters: 8
+      matcher_topk: 96
+      enable_occ_aware: true
+      enable_long_gap: false
+      enable_sam_losses: false
+    - start_epoch: 22
+      end_epoch: 23
+      stride_min: 1
+      stride_max: 2
+      refiner_iters: 8
+      matcher_topk: 96
+      enable_occ_aware: true
+      enable_long_gap: true
+      enable_sam_losses: false
+    - start_epoch: 24
+      end_epoch: 35
+      stride_min: 1
+      stride_max: 2
+      refiner_iters: 8
+      matcher_topk: 96
+      enable_occ_aware: true
+      enable_long_gap: true
+      enable_sam_losses: true
+    - start_epoch: 36
+      end_epoch: 60
+      stride_min: 1
+      stride_max: 3
+      refiner_iters: 8
+      matcher_topk: 96
+      enable_occ_aware: true
+      enable_long_gap: true
+      enable_sam_losses: true
 
 ckpt:
   save_every: 5

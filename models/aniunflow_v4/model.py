@@ -447,6 +447,7 @@ class AniFlowFormerTV4(nn.Module):
         sam_masks: Optional[torch.Tensor] = None,
         sam_features: Optional[Dict] = None,
         return_losses: bool = False,
+        compute_sam_losses: bool = True,
     ) -> Dict[str, torch.Tensor]:
         _, t, _, _, _ = clip.shape
 
@@ -477,7 +478,7 @@ class AniFlowFormerTV4(nn.Module):
             else:
                 outputs["flows_bw"] = flows_bw_list
 
-            if sam_masks is not None and len(flows_fw) > 0:
+            if compute_sam_losses and sam_masks is not None and len(flows_fw) > 0:
                 mask_labels_all = self._normalize_mask_labels(sam_masks)
                 sam_loss_accum: Dict[str, torch.Tensor] = {}
                 count = 0

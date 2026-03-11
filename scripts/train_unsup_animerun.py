@@ -206,6 +206,10 @@ def main():
     
     # Setup CUDNN
     cudnn.benchmark = True
+    if torch.cuda.is_available():
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        torch.set_float32_matmul_precision("high")
     
     # Setup workspace
     workspace = Path(cfg["workspace"])
@@ -269,23 +273,35 @@ def main():
         ),
     )
     
-    train_loader = DataLoader(
-        train_ds,
+    train_num_workers = int(data_cfg.get("num_workers", 4))
+    train_persistent_workers = bool(data_cfg.get("persistent_workers", train_num_workers > 0))
+    train_prefetch_factor = int(data_cfg.get("prefetch_factor", 2))
+    train_loader_kwargs = dict(
         batch_size=data_cfg.get("batch_size", 4),
         shuffle=data_cfg.get("shuffle", True),
-        num_workers=data_cfg.get("num_workers", 4),
+        num_workers=train_num_workers,
         pin_memory=True,
         drop_last=data_cfg.get("drop_last", True),
     )
-    
-    val_loader = DataLoader(
-        val_ds,
+    if train_num_workers > 0:
+        train_loader_kwargs["persistent_workers"] = train_persistent_workers
+        train_loader_kwargs["prefetch_factor"] = max(1, train_prefetch_factor)
+    train_loader = DataLoader(train_ds, **train_loader_kwargs)
+
+    val_num_workers = int(data_cfg.get("val_num_workers", max(2, train_num_workers // 2)))
+    val_persistent_workers = bool(data_cfg.get("val_persistent_workers", val_num_workers > 0))
+    val_prefetch_factor = int(data_cfg.get("val_prefetch_factor", max(1, train_prefetch_factor // 2)))
+    val_loader_kwargs = dict(
         batch_size=max(1, data_cfg.get("batch_size", 4) // 2),
         shuffle=False,
-        num_workers=max(2, data_cfg.get("num_workers", 4) // 2),
+        num_workers=val_num_workers,
         pin_memory=True,
         drop_last=False,
     )
+    if val_num_workers > 0:
+        val_loader_kwargs["persistent_workers"] = val_persistent_workers
+        val_loader_kwargs["prefetch_factor"] = max(1, val_prefetch_factor)
+    val_loader = DataLoader(val_ds, **val_loader_kwargs)
     
     print(f"Train dataset: {len(train_ds)} clips")
     print(f"Val dataset: {len(val_ds)} clips")
@@ -308,7 +324,7 @@ def main():
         if clip.dtype == torch.uint8:
             clip = clip.float() / 255.0
         
-        with torch.cuda.amp.autocast(enabled=torch.cuda.is_available()):
+        with torch.amp.autocast(device_type="cuda", enabled=torch.cuda.is_available()):
             out = trainer.model(clip)
             print(f"Model output keys: {out.keys()}")
             print(f"Flows: {len(out['flows'])} predictions")
