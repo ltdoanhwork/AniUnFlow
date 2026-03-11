@@ -13,7 +13,7 @@ fi
 
 conda run -n "${ENV_NAME}" python -m pip install --upgrade pip
 conda run -n "${ENV_NAME}" python -m pip install \
-  tensorflow==2.16.2 \
+  "tensorflow[and-cuda]==2.16.2" \
   tf_slim \
   pillow \
   matplotlib \
