@@ -57,6 +57,9 @@ model:
   refiner_prior_flow_init_clip: 1.2
   refiner_delta_damping: 0.70
   refiner_delta_damping_decay: 0.95
+  predict_uncertainty: true
+  predict_occlusion: true
+  enable_triframe_head: true
 
 sam:
   enabled: true
@@ -110,6 +113,10 @@ loss:
   long_gap_consistency_weight: 0.04
   long_gap_start_epoch: 8
   long_gap_ramp_epochs: 8
+  tri_cycle_weight: 0.12
+  uncertainty_reg_weight: 0.002
+  occlusion_reg_weight: 0.01
+  occlusion_prior: 0.15
 
 optim:
   lr: 7.0e-5
@@ -137,6 +144,14 @@ validation:
   every_n_epochs: 4
   early_stop_delta: 0.5
   early_stop_patience: 6
+
+teacher:
+  enabled: true
+  ema_decay: 0.999
+  start_step: 1500
+  distill_weight: 0.08
+  confidence_threshold: 0.7
+  every_n_steps: 4
 
 runtime:
   schedule:

@@ -12,6 +12,7 @@ Features:
 - Flow magnitude and segment statistics monitoring
 """
 from __future__ import annotations
+import copy
 import math
 import time
 from pathlib import Path
@@ -35,6 +36,7 @@ from models.aniunflow.losses import UnsupervisedFlowLoss as AFTLosses
 # Segment-aware imports
 from losses.segment_aware_losses import SegmentAwareLossModule, build_segment_aware_losses
 from models.aniunflow.sam2_guidance import SAM2GuidanceModule, build_sam2_guidance
+from utils.warp import flow_warp
 
 
 # ------------------------------ Utilities ------------------------------ #
@@ -205,6 +207,10 @@ class SegmentAwareTrainer:
         self.long_gap_start_epoch = int(_loss_get("long_gap_start_epoch", None, 999))
         self.long_gap_ramp_epochs = int(_loss_get("long_gap_ramp_epochs", None, 0))
         self.skip_sam_compute_until_epoch = int(_loss_get("skip_sam_compute_until_epoch", None, 1))
+        self.tri_cycle_weight = float(_loss_get("tri_cycle_weight", None, 0.0))
+        self.uncertainty_reg_weight = float(_loss_get("uncertainty_reg_weight", None, 0.0))
+        self.occlusion_reg_weight = float(_loss_get("occlusion_reg_weight", None, 0.0))
+        self.occlusion_prior = float(_loss_get("occlusion_prior", None, 0.15))
         
         # Segment-aware losses
         self.use_segment_losses = self._has_segment_losses()
@@ -244,6 +250,21 @@ class SegmentAwareTrainer:
         
         # Semi-supervised weight
         self.w_epe_sup = float(_loss_get("w_epe_sup", None, 0.0))
+
+        # Online EMA teacher for one-stage self-distillation.
+        teacher_cfg = cfg.get("teacher", {})
+        self.teacher_enabled = bool(teacher_cfg.get("enabled", False))
+        self.teacher_ema_decay = float(teacher_cfg.get("ema_decay", 0.999))
+        self.teacher_start_step = int(teacher_cfg.get("start_step", 0))
+        self.teacher_distill_weight = float(teacher_cfg.get("distill_weight", 0.0))
+        self.teacher_conf_threshold = float(teacher_cfg.get("confidence_threshold", 0.0))
+        self.teacher_every_n_steps = max(1, int(teacher_cfg.get("every_n_steps", 1)))
+        self.teacher_model: Optional[nn.Module] = None
+        if self.teacher_enabled and isinstance(self.model, AniFlowFormerTV4):
+            self.teacher_model = copy.deepcopy(self.model).to(self.device)
+            self.teacher_model.eval()
+            for p in self.teacher_model.parameters():
+                p.requires_grad = False
         
         # Logging
         log_cfg = cfg.get("logging", {})
@@ -313,6 +334,78 @@ class SegmentAwareTrainer:
         p = (self.current_epoch - self.long_gap_start_epoch + 1) / float(self.long_gap_ramp_epochs)
         p = max(0.0, min(1.0, p))
         return self.long_gap_photo_weight * p, self.long_gap_consistency_weight * p
+
+    @staticmethod
+    def _compose_flow(flow_01: torch.Tensor, flow_12: torch.Tensor) -> torch.Tensor:
+        """Compose 0->1 and 1->2 into 0->2."""
+        if flow_12.shape[-2:] != flow_01.shape[-2:]:
+            h0, w0 = flow_12.shape[-2:]
+            flow_12 = F.interpolate(flow_12, size=flow_01.shape[-2:], mode="bilinear", align_corners=True)
+            sx = flow_01.shape[-1] / max(w0, 1)
+            sy = flow_01.shape[-2] / max(h0, 1)
+            flow_12[:, 0] *= sx
+            flow_12[:, 1] *= sy
+        return flow_01 + flow_warp(flow_12, flow_01)
+
+    def _tri_cycle_loss(self, flows_fw: List[torch.Tensor], flows_long: List[torch.Tensor]) -> torch.Tensor:
+        """Cycle consistency between direct long flow and composed adjacent flows."""
+        if len(flows_fw) < 2 or len(flows_long) == 0:
+            return torch.tensor(0.0, device=self.device)
+        flow_01 = flows_fw[0]
+        flow_12 = flows_fw[1]
+        flow_02 = flows_long[0]
+        composed_02 = self._compose_flow(flow_01, flow_12)
+        if flow_02.shape[-2:] != composed_02.shape[-2:]:
+            flow_02 = F.interpolate(flow_02, size=composed_02.shape[-2:], mode="bilinear", align_corners=True)
+        return (flow_02 - composed_02).abs().mean()
+
+    def _compute_distill_loss(self, student_out: Dict[str, Any], teacher_out: Dict[str, Any]) -> Optional[torch.Tensor]:
+        sf = student_out.get("flows_fw", [])
+        tf = teacher_out.get("flows_fw", [])
+        if not sf or not tf:
+            return None
+        n = min(len(sf), len(tf))
+        losses = []
+        for i in range(n):
+            s = sf[i]
+            t = tf[i].detach()
+            if t.shape[-2:] != s.shape[-2:]:
+                t = F.interpolate(t, size=s.shape[-2:], mode="bilinear", align_corners=True)
+
+            conf = None
+            tu = teacher_out.get("uncertainty_fw", [])
+            to = teacher_out.get("occlusion_fw", [])
+            if i < len(tu):
+                log_var = tu[i].detach()
+                if log_var.shape[-2:] != s.shape[-2:]:
+                    log_var = F.interpolate(log_var, size=s.shape[-2:], mode="bilinear", align_corners=False)
+                conf = torch.exp(-log_var.clamp(min=-4.0, max=4.0))
+            if i < len(to):
+                occ = to[i].detach()
+                if occ.shape[-2:] != s.shape[-2:]:
+                    occ = F.interpolate(occ, size=s.shape[-2:], mode="bilinear", align_corners=False)
+                occ = occ.clamp(0.0, 1.0)
+                conf = (1.0 - occ) if conf is None else conf * (1.0 - occ)
+
+            if conf is None:
+                conf = torch.ones((s.shape[0], 1, s.shape[2], s.shape[3]), device=s.device, dtype=s.dtype)
+
+            if self.teacher_conf_threshold > 0:
+                conf = conf * (conf > self.teacher_conf_threshold).float()
+            diff = (s - t).abs().mean(dim=1, keepdim=True)
+            losses.append((diff * conf).sum() / (conf.sum() + 1e-6))
+
+        if not losses:
+            return None
+        return sum(losses) / len(losses)
+
+    @torch.no_grad()
+    def _update_ema_teacher(self):
+        if self.teacher_model is None:
+            return
+        decay = max(0.0, min(0.99999, self.teacher_ema_decay))
+        for t_param, s_param in zip(self.teacher_model.parameters(), self.model.parameters()):
+            t_param.data.mul_(decay).add_(s_param.data, alpha=1.0 - decay)
 
     @staticmethod
     def _set_matcher_topk(module: Optional[nn.Module], topk: int):
@@ -776,6 +869,48 @@ class SegmentAwareTrainer:
                             total_loss = total_loss + scaled
                             loss_dict[f"sam_{name}"] = float(scaled.detach())
 
+                    # Tri-frame cycle consistency (direct 0->2 vs composed 0->1->2).
+                    if self.tri_cycle_weight > 0:
+                        tri_cycle = self._tri_cycle_loss(
+                            flows_fw=flows_fw,
+                            flows_long=out_fw.get("flows_long", []),
+                        )
+                        total_loss = total_loss + self.tri_cycle_weight * tri_cycle
+                        loss_dict["tri_cycle"] = float(tri_cycle.detach())
+
+                    # Uncertainty and occlusion regularization to avoid degenerate predictions.
+                    if self.uncertainty_reg_weight > 0 and out_fw.get("uncertainty_fw"):
+                        u = torch.cat([x.view(x.shape[0], -1) for x in out_fw["uncertainty_fw"]], dim=1)
+                        uncertainty_reg = (u.clamp(min=-4.0, max=4.0) ** 2).mean()
+                        total_loss = total_loss + self.uncertainty_reg_weight * uncertainty_reg
+                        loss_dict["uncertainty_reg"] = float(uncertainty_reg.detach())
+                    if self.occlusion_reg_weight > 0 and out_fw.get("occlusion_fw"):
+                        occ = torch.cat([x.view(x.shape[0], -1) for x in out_fw["occlusion_fw"]], dim=1)
+                        occ_target = torch.full_like(occ, self.occlusion_prior)
+                        occ_reg = F.binary_cross_entropy(occ.clamp(1e-4, 1.0 - 1e-4), occ_target)
+                        total_loss = total_loss + self.occlusion_reg_weight * occ_reg
+                        loss_dict["occlusion_reg"] = float(occ_reg.detach())
+
+                    # Online EMA-teacher distillation (single-stage).
+                    if (
+                        self.teacher_model is not None
+                        and self.teacher_distill_weight > 0
+                        and self.global_step >= self.teacher_start_step
+                        and (self.global_step % self.teacher_every_n_steps == 0)
+                    ):
+                        with torch.no_grad():
+                            teacher_out = self.teacher_model(
+                                clip,
+                                sam_masks=segment_masks,
+                                sam_features=sam_features,
+                                return_losses=False,
+                                compute_sam_losses=False,
+                            )
+                        distill_loss = self._compute_distill_loss(out_fw, teacher_out)
+                        if distill_loss is not None:
+                            total_loss = total_loss + self.teacher_distill_weight * distill_loss
+                            loss_dict["distill"] = float(distill_loss.detach())
+
                 else:
                     # V1/V3 Model: Separate forward and loss
                     out_fw = self.model(clip, sam_masks=segment_masks)
@@ -844,6 +979,8 @@ class SegmentAwareTrainer:
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
                 self.optimizer.zero_grad(set_to_none=True)
+                if self.teacher_model is not None:
+                    self._update_ema_teacher()
                 
                 if self.sched_per_batch and self.scheduler:
                     self.scheduler.step()
@@ -1107,6 +1244,7 @@ class SegmentAwareTrainer:
             "epoch": self.current_epoch,
             "step": self.global_step,
             "state_dict": self.model.state_dict(),
+            "teacher_state_dict": self.teacher_model.state_dict() if self.teacher_model is not None else None,
             "optimizer": self.optimizer.state_dict(),
             "scheduler": self.scheduler.state_dict() if self.scheduler else None,
             "best_metric": self.best_metric,
@@ -1118,6 +1256,8 @@ class SegmentAwareTrainer:
         """Load checkpoint."""
         ckpt = torch.load(path, map_location=self.device)
         self.model.load_state_dict(ckpt["state_dict"])
+        if self.teacher_model is not None and ckpt.get("teacher_state_dict") is not None:
+            self.teacher_model.load_state_dict(ckpt["teacher_state_dict"])
         
         if load_optimizer and "optimizer" in ckpt:
             self.optimizer.load_state_dict(ckpt["optimizer"])

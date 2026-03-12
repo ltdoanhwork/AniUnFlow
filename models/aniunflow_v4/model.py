@@ -150,6 +150,8 @@ class AniFlowFormerTV4(nn.Module):
                     delta_damping_decay=float(
                         getattr(self.model_cfg, "refiner_delta_damping_decay", 1.0)
                     ),
+                    predict_uncertainty=bool(getattr(self.model_cfg, "predict_uncertainty", False)),
+                    predict_occlusion=bool(getattr(self.model_cfg, "predict_occlusion", False)),
                 )
 
         # SAM components
@@ -302,15 +304,21 @@ class AniFlowFormerTV4(nn.Module):
 
             labels_t = mask_labels[:, ti : ti + 1].float()
             labels_t = F.interpolate(labels_t, size=(h8, w8), mode="nearest").squeeze(1).long()
+            labels_t = labels_t.clamp(min=0, max=s)
+            labels_flat = labels_t.view(b, -1)
+            feat_flat = feat_t.flatten(2).transpose(1, 2)  # (B, HW, D)
 
-            tok_t = feat_t.new_zeros((b, s, d))
-            for bi in range(b):
-                labels_b = labels_t[bi]
-                feat_b = feat_t[bi]
-                for seg_id in range(1, s + 1):
-                    seg_mask = labels_b == seg_id
-                    if seg_mask.any():
-                        tok_t[bi, seg_id - 1] = feat_b[:, seg_mask].mean(dim=1)
+            # Vectorized per-segment mean pooling with scatter_add.
+            tok_sum = feat_t.new_zeros((b, s + 1, d))
+            tok_cnt = feat_t.new_zeros((b, s + 1, 1))
+            idx = labels_flat.unsqueeze(-1).expand(-1, -1, d)
+            tok_sum.scatter_add_(1, idx, feat_flat)
+            tok_cnt.scatter_add_(
+                1,
+                labels_flat.unsqueeze(-1),
+                feat_t.new_ones((b, labels_flat.shape[1], 1)),
+            )
+            tok_t = tok_sum[:, 1:] / tok_cnt[:, 1:].clamp_min(1.0)
             seg_tokens_all.append(tok_t)
 
         return torch.stack(seg_tokens_all, dim=1)
@@ -383,11 +391,18 @@ class AniFlowFormerTV4(nn.Module):
         feats_levels: List[List[torch.Tensor]],
         boundary_maps: Optional[torch.Tensor],
         mask_labels: Optional[torch.Tensor],
-    ) -> List[torch.Tensor]:
+    ) -> Tuple[List[torch.Tensor], List[torch.Tensor], List[torch.Tensor], List[torch.Tensor]]:
         assert self.iterative_refiner is not None
 
         latent, _ = self._run_v45_matcher(feats_levels, boundary_maps, mask_labels)
         flows = []
+        uncertainty = []
+        occlusion = []
+        flows_long = []
+        return_aux = bool(
+            getattr(self.model_cfg, "predict_uncertainty", False)
+            or getattr(self.model_cfg, "predict_occlusion", False)
+        )
 
         pair_count = len(feats_levels[1]) - 1
         for k in range(pair_count):
@@ -407,7 +422,7 @@ class AniFlowFormerTV4(nn.Module):
             if mask_labels is not None and k < mask_labels.shape[1]:
                 segment_k = mask_labels[:, k : k + 1].float() / max(float(self.sam_cfg.num_segments), 1.0)
 
-            flow_k = self.iterative_refiner(
+            out_k = self.iterative_refiner(
                 feat1=f1,
                 feat2=f2,
                 context_feat=f1,
@@ -415,31 +430,83 @@ class AniFlowFormerTV4(nn.Module):
                 boundary=boundary_k,
                 segment=segment_k,
                 iters=int(getattr(self.model_cfg, "refiner_iters", 10)),
+                return_aux=return_aux,
             )
-            flows.append(flow_k)
+            if isinstance(out_k, dict):
+                flows.append(out_k["flow"])
+                if "log_var" in out_k:
+                    uncertainty.append(out_k["log_var"])
+                if "occ_prob" in out_k:
+                    occlusion.append(out_k["occ_prob"])
+            else:
+                flows.append(out_k)
 
-        return flows
+        if bool(getattr(self.model_cfg, "enable_triframe_head", False)) and len(feats_levels[1]) >= 3:
+            f0 = feats_levels[1][0]
+            f2 = feats_levels[1][2]
+            h8, w8 = f0.shape[-2:]
+            prior_long = None
+            if len(latent) > 1 and len(latent[1]) >= 2:
+                p0 = latent[1][0]
+                p1 = latent[1][1]
+                if p0.dim() == 3:
+                    p0 = p0.view(p0.shape[0], p0.shape[1], h8, w8)
+                if p1.dim() == 3:
+                    p1 = p1.view(p1.shape[0], p1.shape[1], h8, w8)
+                prior_long = 0.5 * (p0 + p1)
+
+            boundary_long = boundary_maps[:, 0] if boundary_maps is not None else None
+            segment_long = None
+            if mask_labels is not None:
+                segment_long = mask_labels[:, 0:1].float() / max(float(self.sam_cfg.num_segments), 1.0)
+
+            out_long = self.iterative_refiner(
+                feat1=f0,
+                feat2=f2,
+                context_feat=f0,
+                prior=prior_long,
+                boundary=boundary_long,
+                segment=segment_long,
+                iters=int(getattr(self.model_cfg, "refiner_iters", 10)),
+                return_aux=return_aux,
+            )
+            if isinstance(out_long, dict):
+                flows_long.append(out_long["flow"])
+            else:
+                flows_long.append(out_long)
+
+        return flows, uncertainty, occlusion, flows_long
 
     def _get_flows(
         self,
         clip: torch.Tensor,
         sam_masks: Optional[torch.Tensor] = None,
         sam_features: Optional[Dict] = None,
-    ) -> Tuple[List[torch.Tensor], Optional[torch.Tensor]]:
+    ) -> Tuple[List[torch.Tensor], Optional[torch.Tensor], Dict[str, List[torch.Tensor]]]:
         feats_levels, boundary_maps, mask_labels = self._extract_features(
             clip,
             sam_masks=sam_masks,
             sam_features=sam_features,
         )
+        extras: Dict[str, List[torch.Tensor]] = {
+            "uncertainty": [],
+            "occlusion": [],
+            "flows_long": [],
+        }
 
         if self.backbone == "v4_5_hybrid_sam":
-            flows = self._run_v45_hybrid(feats_levels, boundary_maps, mask_labels)
+            flows, uncertainty, occlusion, flows_long = self._run_v45_hybrid(
+                feats_levels, boundary_maps, mask_labels
+            )
+            extras["uncertainty"] = uncertainty
+            extras["occlusion"] = occlusion
+            extras["flows_long"] = flows_long
         elif self.backbone == "v4_5_matcher_lcm":
             flows = self._run_v45_matcher_lcm(feats_levels, boundary_maps, mask_labels)
         else:
             flows = self._run_v4_backbone(feats_levels, mask_labels)
 
-        return flows, boundary_maps
+        return flows, boundary_maps, extras
 
     def forward(
         self,
@@ -451,11 +518,16 @@ class AniFlowFormerTV4(nn.Module):
     ) -> Dict[str, torch.Tensor]:
         _, t, _, _, _ = clip.shape
 
-        flows_fw, bn_fw = self._get_flows(clip, sam_masks, sam_features)
+        flows_fw, bn_fw, extras_fw = self._get_flows(clip, sam_masks, sam_features)
         outputs = {
             "flows": flows_fw,
             "flows_fw": flows_fw,
             "flows_bw": [],
+            "uncertainty_fw": extras_fw.get("uncertainty", []),
+            "occlusion_fw": extras_fw.get("occlusion", []),
+            "flows_long": extras_fw.get("flows_long", []),
+            "uncertainty_bw": [],
+            "occlusion_bw": [],
         }
 
         if return_losses:
@@ -471,12 +543,18 @@ class AniFlowFormerTV4(nn.Module):
                     else:
                         feats_bw[k] = v
 
-            flows_bw_list, _ = self._get_flows(clip_bw, masks_bw, feats_bw)
+            flows_bw_list, _, extras_bw = self._get_flows(clip_bw, masks_bw, feats_bw)
             if len(flows_bw_list) == len(flows_fw):
                 ln = len(flows_bw_list)
                 outputs["flows_bw"] = [flows_bw_list[ln - 1 - i] for i in range(ln)]
             else:
                 outputs["flows_bw"] = flows_bw_list
+            if extras_bw.get("uncertainty"):
+                ub = extras_bw["uncertainty"]
+                outputs["uncertainty_bw"] = [ub[len(ub) - 1 - i] for i in range(len(ub))]
+            if extras_bw.get("occlusion"):
+                ob = extras_bw["occlusion"]
+                outputs["occlusion_bw"] = [ob[len(ob) - 1 - i] for i in range(len(ob))]
 
             if compute_sam_losses and sam_masks is not None and len(flows_fw) > 0:
                 mask_labels_all = self._normalize_mask_labels(sam_masks)
