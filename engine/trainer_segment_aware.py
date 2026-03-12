@@ -767,11 +767,17 @@ class SegmentAwareTrainer:
             lr = self.optimizer.param_groups[0]["lr"]
             train_loss = train_metrics["loss"] / max(1, train_metrics["steps"])
             nan_skips = int(train_metrics.get("nan_skips", 0))
+            if val_metric is None:
+                val_metric_text = "SKIP"
+            elif np.isfinite(val_metric):
+                val_metric_text = f"{val_metric}"
+            else:
+                val_metric_text = "nan"
             
             print(
                 f"[Epoch {epoch:03d}/{epochs}] "
                 f"train_loss={train_loss:.4f} "
-                f"val_epe={val_metric if val_metric is not None else 'N/A'} "
+                f"val_epe={val_metric_text} "
                 f"lr={lr:.2e} time={dt:.1f}s "
                 f"nan_skips={nan_skips}"
             )

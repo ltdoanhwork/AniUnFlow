@@ -19,7 +19,7 @@ data:
   val_load_sam_masks: true
   val_sam_mask_dir: data/AnimeRun_v2/SAM_Masks_v2
   val_sam_mask_cache_size: 1024
-  batch_size: 16
+  batch_size: 8
   num_workers: 8
   persistent_workers: true
   prefetch_factor: 6
