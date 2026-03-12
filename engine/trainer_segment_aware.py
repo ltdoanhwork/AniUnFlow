@@ -473,13 +473,67 @@ class SegmentAwareTrainer:
     def _apply_stride_range(self, train_loader: DataLoader, stride_min: int, stride_max: int, source: str):
         ds = self._unwrap_dataset(train_loader.dataset)
         if not hasattr(ds, "set_stride_range"):
-            return
+            return False
         changed = ds.set_stride_range(int(stride_min), int(stride_max))
         if changed:
             print(
                 f"[Trainer] {source} epoch {self.current_epoch}: "
                 f"stride {int(stride_min)}..{int(stride_max)} | samples={len(ds)}"
             )
+        return changed
+
+    @staticmethod
+    def _reset_dataloader_iterator(loader: DataLoader):
+        """
+        Force DataLoader to recreate workers/iterator on the next __iter__ call.
+        This is required when the underlying dataset length changes while
+        persistent workers are enabled.
+        """
+        iterator = getattr(loader, "_iterator", None)
+        if iterator is None:
+            return
+        shutdown = getattr(iterator, "_shutdown_workers", None)
+        if callable(shutdown):
+            shutdown()
+        loader._iterator = None
+
+    @staticmethod
+    def _estimate_num_batches(num_samples: int, batch_size: int, drop_last: bool) -> int:
+        if batch_size <= 0:
+            return max(1, num_samples)
+        if drop_last:
+            return max(1, num_samples // batch_size)
+        return max(1, math.ceil(num_samples / float(batch_size)))
+
+    def _estimate_train_batches_for_epoch(self, train_loader: DataLoader, epoch: int) -> int:
+        ds = self._unwrap_dataset(train_loader.dataset)
+        batch_size = int(getattr(train_loader, "batch_size", 1) or 1)
+        drop_last = bool(getattr(train_loader, "drop_last", False))
+
+        stride_pair = None
+        for stage in self.runtime_schedule:
+            start = int(stage.get("start_epoch", 1))
+            end = int(stage.get("end_epoch", 10**9))
+            if start <= epoch <= end and "stride_min" in stage and "stride_max" in stage:
+                stride_pair = (int(stage["stride_min"]), int(stage["stride_max"]))
+                break
+
+        if stride_pair is None:
+            for stage in self.motion_curriculum:
+                start = int(stage.get("start_epoch", 1))
+                end = int(stage.get("end_epoch", 10**9))
+                if start <= epoch <= end:
+                    stride_pair = (
+                        int(stage.get("stride_min", getattr(ds, "smin", 1))),
+                        int(stage.get("stride_max", getattr(ds, "smax", 1))),
+                    )
+                    break
+
+        if stride_pair is not None and hasattr(ds, "count_samples_for_stride_range"):
+            num_samples = int(ds.count_samples_for_stride_range(stride_pair[0], stride_pair[1]))
+            return self._estimate_num_batches(num_samples, batch_size, drop_last)
+
+        return max(1, len(train_loader))
 
     def _apply_runtime_schedule(self, train_loader: DataLoader):
         """Apply epoch-based runtime overrides (iters/topk/stride/loss toggles)."""
@@ -505,7 +559,14 @@ class SegmentAwareTrainer:
             stride_pair = (int(stage["stride_min"]), int(stage["stride_max"]))
             if self._runtime_state.get("stride") != stride_pair:
                 self._runtime_state["stride"] = stride_pair
-                self._apply_stride_range(train_loader, stride_pair[0], stride_pair[1], "Runtime schedule")
+                changed = self._apply_stride_range(
+                    train_loader,
+                    stride_pair[0],
+                    stride_pair[1],
+                    "Runtime schedule",
+                )
+                if changed:
+                    self._reset_dataloader_iterator(train_loader)
                 changed_msgs.append(f"stride={stride_pair[0]}..{stride_pair[1]}")
 
         # Refiner iterations override (AniFlowFormerTV4 only).
@@ -577,7 +638,9 @@ class SegmentAwareTrainer:
         if target is None:
             return
 
-        self._apply_stride_range(train_loader, target[0], target[1], "Motion curriculum")
+        changed = self._apply_stride_range(train_loader, target[0], target[1], "Motion curriculum")
+        if changed:
+            self._reset_dataloader_iterator(train_loader)
     
     def _build_model(self) -> nn.Module:
         """Build AniFlowFormer-T model from config."""
@@ -688,11 +751,14 @@ class SegmentAwareTrainer:
             if pct_start is None:
                 pct_start = warmup_epochs / epochs if epochs > 0 else 0.05
             pct_start = float(max(0.01, min(0.99, pct_start)))
+            total_steps = sum(
+                self._estimate_train_batches_for_epoch(train_loader, epoch_idx)
+                for epoch_idx in range(1, epochs + 1)
+            )
             self.scheduler = torch.optim.lr_scheduler.OneCycleLR(
                 self.optimizer,
                 max_lr=float(sched_cfg.get("max_lr", self.cfg["optim"]["lr"])),
-                steps_per_epoch=max(1, len(train_loader)),
-                epochs=epochs,
+                total_steps=max(1, total_steps),
                 pct_start=pct_start,
                 div_factor=float(sched_cfg.get("div_factor", 25.0)),
                 final_div_factor=float(sched_cfg.get("final_div_factor", 1e4)),

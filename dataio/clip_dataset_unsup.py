@@ -255,6 +255,20 @@ class UnlabeledClipDataset(Dataset):
     def __len__(self):
         return len(self.index)
 
+    def count_samples_for_stride_range(self, stride_min: int, stride_max: int) -> int:
+        """Count train samples for a candidate stride range without mutating dataset state."""
+        if self.is_test:
+            return len(self.index)
+
+        new_min = max(1, int(stride_min))
+        new_max = max(new_min, int(stride_max))
+        total = 0
+        for frames in self.train_seqs:
+            n = len(frames)
+            for s in range(new_min, new_max + 1):
+                total += max(0, n - 2 * self.L * s)
+        return total
+
     def _rebuild_index(self):
         """Rebuild sample index for current stride range."""
         self.index = []
