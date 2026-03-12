@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from typing import Optional
+from typing import Optional, Union
 
 import torch
 import torch.nn as nn
@@ -271,6 +271,8 @@ class IterativeFlowRefiner(nn.Module):
         prior_flow_init_clip: float = 0.0,
         delta_damping: float = 1.0,
         delta_damping_decay: float = 1.0,
+        predict_uncertainty: bool = False,
+        predict_occlusion: bool = False,
     ):
         super().__init__()
         self.hidden_dim = hidden_dim
@@ -287,6 +289,8 @@ class IterativeFlowRefiner(nn.Module):
         self.prior_flow_init_clip = float(prior_flow_init_clip)
         self.delta_damping = float(delta_damping)
         self.delta_damping_decay = float(delta_damping_decay)
+        self.predict_uncertainty = bool(predict_uncertainty)
+        self.predict_occlusion = bool(predict_occlusion)
 
         self.feature_proj = nn.Conv2d(feat_in_dim, self.feature_dim, 1)
         self.context_encoder = nn.Sequential(
@@ -307,6 +311,22 @@ class IterativeFlowRefiner(nn.Module):
             corr_radius=corr_radius,
             boundary_gate_strength=boundary_gate_strength,
         )
+        if self.predict_uncertainty:
+            self.uncertainty_head = nn.Sequential(
+                nn.Conv2d(hidden_dim, hidden_dim, 3, padding=1),
+                nn.GELU(),
+                nn.Conv2d(hidden_dim, 1, 3, padding=1),
+            )
+        else:
+            self.uncertainty_head = None
+        if self.predict_occlusion:
+            self.occlusion_head = nn.Sequential(
+                nn.Conv2d(hidden_dim, hidden_dim, 3, padding=1),
+                nn.GELU(),
+                nn.Conv2d(hidden_dim, 1, 3, padding=1),
+            )
+        else:
+            self.occlusion_head = None
 
     def forward(
         self,
@@ -317,7 +337,8 @@ class IterativeFlowRefiner(nn.Module):
         boundary: Optional[torch.Tensor] = None,
         segment: Optional[torch.Tensor] = None,
         iters: Optional[int] = None,
-    ) -> torch.Tensor:
+        return_aux: bool = False,
+    ) -> Union[torch.Tensor, dict]:
         b, _, h, w = feat1.shape
         n_iters = int(iters) if iters is not None else self.iters
 
@@ -393,5 +414,20 @@ class IterativeFlowRefiner(nn.Module):
 
         flow8 = coords1 - coords0
         if self.use_convex_upsampler and up_mask is not None:
-            return _convex_upsample2(flow8, up_mask)
-        return 2.0 * F.interpolate(flow8, scale_factor=2.0, mode="bilinear", align_corners=True)
+            flow_out = _convex_upsample2(flow8, up_mask)
+        else:
+            flow_out = 2.0 * F.interpolate(flow8, scale_factor=2.0, mode="bilinear", align_corners=True)
+
+        if not return_aux:
+            return flow_out
+
+        outputs = {"flow": flow_out}
+        if self.uncertainty_head is not None:
+            log_var = self.uncertainty_head(net)
+            log_var = F.interpolate(log_var, size=flow_out.shape[-2:], mode="bilinear", align_corners=False)
+            outputs["log_var"] = log_var
+        if self.occlusion_head is not None:
+            occ_logits = self.occlusion_head(net)
+            occ_logits = F.interpolate(occ_logits, size=flow_out.shape[-2:], mode="bilinear", align_corners=False)
+            outputs["occ_prob"] = torch.sigmoid(occ_logits)
+        return outputs

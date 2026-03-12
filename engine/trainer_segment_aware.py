@@ -551,12 +551,19 @@ class SegmentAwareTrainer:
                 eta_min=float(sched_cfg.get("min_lr", 1e-6)),
             )
         elif sched_type == "onecycle":
+            pct_start = sched_cfg.get("pct_start", None)
+            if pct_start is None:
+                pct_start = warmup_epochs / epochs if epochs > 0 else 0.05
+            pct_start = float(max(0.01, min(0.99, pct_start)))
             self.scheduler = torch.optim.lr_scheduler.OneCycleLR(
                 self.optimizer,
                 max_lr=float(sched_cfg.get("max_lr", self.cfg["optim"]["lr"])),
                 steps_per_epoch=max(1, len(train_loader)),
                 epochs=epochs,
-                pct_start=warmup_epochs / epochs if epochs > 0 else 0.05,
+                pct_start=pct_start,
+                div_factor=float(sched_cfg.get("div_factor", 25.0)),
+                final_div_factor=float(sched_cfg.get("final_div_factor", 1e4)),
+                anneal_strategy=str(sched_cfg.get("anneal_strategy", "cos")),
             )
             self.sched_per_batch = True
         else:
@@ -699,13 +706,14 @@ class SegmentAwareTrainer:
                 # Use pre-loaded masks if available (faster)
                 if "sam_masks" in batch:
                     segment_masks = batch["sam_masks"]
-                    # Calculate boundary maps from pre-loaded masks
-                    with torch.no_grad():
-                         boundary_maps = self.sam_guidance.compute_boundary_maps(segment_masks)
                 else:
                     # Fallback to online generation (slower)
                     with torch.no_grad():
                         segment_masks = self.sam_guidance.extract_segment_masks(clip)
+                # Boundary maps are needed only for non-V4 segment-aware loss path.
+                need_boundary_maps = self.use_segment_losses and not isinstance(self.model, AniFlowFormerTV4)
+                if need_boundary_maps and segment_masks is not None:
+                    with torch.no_grad():
                         boundary_maps = self.sam_guidance.compute_boundary_maps(segment_masks)
 
             # Optional precomputed SAM features

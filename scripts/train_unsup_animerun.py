@@ -248,6 +248,7 @@ def main():
         is_test=False,
         load_sam_masks=data_cfg.get("load_sam_masks", False),
         sam_mask_root=data_cfg.get("sam_mask_dir", None),
+        sam_mask_cache_size=data_cfg.get("sam_mask_cache_size", 0),
     )
     
     val_ds = UnlabeledClipDataset(
@@ -270,6 +271,10 @@ def main():
         sam_mask_root=data_cfg.get(
             "val_sam_mask_dir",
             data_cfg.get("sam_mask_dir", None),
+        ),
+        sam_mask_cache_size=data_cfg.get(
+            "val_sam_mask_cache_size",
+            data_cfg.get("sam_mask_cache_size", 0),
         ),
     )
     

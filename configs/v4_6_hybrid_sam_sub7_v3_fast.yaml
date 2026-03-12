@@ -1,7 +1,7 @@
-# V4.6 Sub7 v2: avoid early schedule shock, increase capacity slightly, delay hard objectives.
+# V4.6 Sub7 v3 fast: reduce dataloader bottlenecks + earlier useful objectives + healthier LR ramp.
 
 seed: 1337
-workspace: workspaces/v4_6_hybrid_sam_sub7_v2
+workspace: workspaces/v4_6_hybrid_sam_sub7_v3_fast
 
 data:
   name: animerun_clip
@@ -130,8 +130,8 @@ optim:
 
 logging:
   use_tb: true
-  tb_dir: tb_v4_6_hybrid_sam_sub7_v2
-  log_every: 100
+  tb_dir: tb_v4_6_hybrid_sam_sub7_v3_fast
+  log_every: 50
 
 validation:
   every_n_epochs: 4
@@ -141,33 +141,33 @@ validation:
 runtime:
   schedule:
     - start_epoch: 1
-      end_epoch: 4
+      end_epoch: 6
       stride_min: 1
       stride_max: 1
-      refiner_iters: 2
-      matcher_topk: 48
+      refiner_iters: 4
+      matcher_topk: 64
       enable_occ_aware: false
       enable_long_gap: false
       enable_sam_losses: false
-    - start_epoch: 5
-      end_epoch: 12
-      stride_min: 1
-      stride_max: 2
-      refiner_iters: 4
-      matcher_topk: 64
-      enable_occ_aware: true
-      enable_long_gap: false
-      enable_sam_losses: false
-    - start_epoch: 13
-      end_epoch: 24
+    - start_epoch: 7
+      end_epoch: 14
       stride_min: 1
       stride_max: 2
       refiner_iters: 6
       matcher_topk: 80
       enable_occ_aware: true
+      enable_long_gap: false
+      enable_sam_losses: false
+    - start_epoch: 15
+      end_epoch: 30
+      stride_min: 1
+      stride_max: 2
+      refiner_iters: 8
+      matcher_topk: 96
+      enable_occ_aware: true
       enable_long_gap: true
       enable_sam_losses: true
-    - start_epoch: 25
+    - start_epoch: 31
       end_epoch: 60
       stride_min: 1
       stride_max: 3

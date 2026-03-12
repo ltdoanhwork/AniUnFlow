@@ -3,6 +3,7 @@ from __future__ import annotations
 import os, cv2, random
 from glob import glob
 from pathlib import Path
+from collections import OrderedDict
 from typing import List, Tuple, Optional, Dict, Any
 
 import numpy as np
@@ -198,6 +199,7 @@ class UnlabeledClipDataset(Dataset):
                  pad_mode: str = "reflect",
                  load_sam_masks: bool = False,
                  sam_mask_root: Optional[str] = None,
+                 sam_mask_cache_size: int = 0,
                  is_test: bool = False):
         assert T >= 3 and T % 2 == 1, "Use odd T >= 3 (e.g., 5)"
         self.root = Path(root)
@@ -206,6 +208,8 @@ class UnlabeledClipDataset(Dataset):
         self.is_test = is_test
         self.load_sam_masks = load_sam_masks
         self.sam_mask_root = Path(sam_mask_root) if sam_mask_root else None
+        self.sam_mask_cache_size = max(0, int(sam_mask_cache_size))
+        self._sam_mask_cache: "OrderedDict[str, torch.Tensor]" = OrderedDict()
 
         # strides & geometry
         self.smin = 1 if is_test else stride_min
@@ -358,6 +362,89 @@ class UnlabeledClipDataset(Dataset):
             
         return mask_padded.transpose(2, 0, 1) # Back to S, H, W
 
+    def _resize_label_mask(self, mask_np: np.ndarray) -> np.ndarray:
+        """Resize integer label map (H, W) with nearest interpolation."""
+        if not self.resize_enable:
+            return mask_np
+
+        h0, w0 = mask_np.shape[:2]
+        H, W = self.H, self.W
+        if self.keep_aspect:
+            scale = min(W / float(w0), H / float(h0))
+            newW, newH = max(1, int(round(w0 * scale))), max(1, int(round(h0 * scale)))
+            mask_rs = cv2.resize(mask_np, (newW, newH), interpolation=cv2.INTER_NEAREST)
+            pad_h, pad_w = H - newH, W - newW
+            top, left = pad_h // 2, pad_w // 2
+            bottom, right = pad_h - top, pad_w - left
+            return cv2.copyMakeBorder(mask_rs, top, bottom, left, right, cv2.BORDER_CONSTANT, value=0)
+        return cv2.resize(mask_np, (W, H), interpolation=cv2.INTER_NEAREST)
+
+    def _cache_get_mask(self, key: str) -> Optional[torch.Tensor]:
+        if self.sam_mask_cache_size <= 0:
+            return None
+        mask = self._sam_mask_cache.get(key, None)
+        if mask is None:
+            return None
+        self._sam_mask_cache.move_to_end(key)
+        return mask
+
+    def _cache_put_mask(self, key: str, mask: torch.Tensor):
+        if self.sam_mask_cache_size <= 0:
+            return
+        self._sam_mask_cache[key] = mask
+        self._sam_mask_cache.move_to_end(key)
+        while len(self._sam_mask_cache) > self.sam_mask_cache_size:
+            self._sam_mask_cache.popitem(last=False)
+
+    def _load_single_sam_mask(self, frame_path: Path) -> torch.Tensor:
+        try:
+            parts = list(frame_path.parts)
+            idx = parts.index("Frame_Anime")
+            rel_parts = parts[max(0, idx - 1):]
+            for i, part in enumerate(rel_parts):
+                if part.startswith("color_"):
+                    rel_parts[i] = "original"
+                    break
+            rel_path = Path(*rel_parts)
+            mask_path = self.sam_mask_root / rel_path.parent / (frame_path.stem + ".pt")
+        except (ValueError, IndexError):
+            mask_path = Path("nonexistent")
+
+        if not mask_path.exists():
+            return torch.zeros((self.H, self.W), dtype=torch.uint8)
+
+        cache_key = (
+            f"{mask_path}|{self.H}x{self.W}|"
+            f"resize={int(self.resize_enable)}|keep={int(self.keep_aspect)}"
+        )
+        cached_mask = self._cache_get_mask(cache_key)
+        if cached_mask is not None:
+            return cached_mask
+
+        mask = torch.load(mask_path, map_location="cpu")
+        if self.resize_enable and mask.ndim in [2, 3]:
+            mask_np = mask.numpy()
+            if mask.ndim == 2:
+                mask_np = self._resize_label_mask(mask_np)
+            else:
+                mask_np = self._resize_mask(mask_np)
+            mask = torch.from_numpy(mask_np)
+
+        # For binary masks, split connected regions into per-object labels.
+        if mask.ndim == 2:
+            mask_np = mask.numpy()
+            if mask_np.dtype != np.uint8:
+                mask_np = mask_np.astype(np.uint8)
+            if mask_np.max() <= 1 and mask_np.max() > 0:
+                fg = (mask_np > 0).astype(np.uint8)
+                _, labels = cv2.connectedComponents(fg, connectivity=8)
+                mask = torch.from_numpy(labels.astype(np.uint8))
+            else:
+                mask = torch.from_numpy(mask_np.astype(np.uint8))
+
+        self._cache_put_mask(cache_key, mask)
+        return mask
+
     # ------------------- main -------------------
     def __getitem__(self, idx: int) -> Dict[str, Any]:
         sid, t, s = self.index[idx]
@@ -395,56 +482,7 @@ class UnlabeledClipDataset(Dataset):
             mask_list = []
             for p in picks:
                 frame_path = frames[p]
-                # Assuming standard structure: .../Frame_Anime/Sequence/Frame/img.png
-                # We need to map this to .../sam_mask_root/.../img.pt
-                
-                # Robust way: find relative path from 'train/Frame_Anime' or 'test/Frame_Anime'
-                try:
-                    # Find 'Frame_Anime' in path parts
-                    parts = list(frame_path.parts)
-                    idx = parts.index('Frame_Anime')
-                    # Include the parent (train/test) to match SAM_Masks structure on disk
-                    # Frame_Anime is at idx, so train/test is at idx-1
-                    rel_parts = parts[max(0, idx-1):]
-                    
-                    # CRITICAL FIX: Masks are only generated for 'original' subdirectory
-                    # But training uses color_1, color_2, etc. Need to remap to 'original'
-                    # Structure: .../Scene/color_X/frame.png -> .../Scene/original/frame.pt
-                    for i, part in enumerate(rel_parts):
-                        if part.startswith('color_'):
-                            rel_parts[i] = 'original'
-                            break
-                    
-                    rel_path = Path(*rel_parts)
-                    mask_path = self.sam_mask_root / rel_path.parent / (frame_path.stem + ".pt")
-                except (ValueError, IndexError):
-                    mask_path = Path("nonexistent")
-                
-                if mask_path.exists():
-                    mask = torch.load(mask_path)  # Either (H, W) uint8 or (S, H, W) float
-                    if self.resize_enable and mask.ndim in [2, 3]:
-                        mask_np = mask.numpy()
-                        if mask.ndim == 2:
-                            # Integer label map (H, W)
-                            from scipy.ndimage import zoom
-                            zoom_factors = (self.H / mask_np.shape[0], self.W / mask_np.shape[1])
-                            mask_np = zoom(mask_np, zoom_factors, order=0)  # Nearest neighbor for labels
-                        else:
-                            # Legacy multi-channel (S, H, W)
-                            mask_np = self._resize_mask(mask_np)
-                        mask = torch.from_numpy(mask_np)
-                    
-                    # Convert binary masks to multi-segment via connected components
-                    if mask.ndim == 2 and len(torch.unique(mask)) <= 2:
-                        import cv2 as cv
-                        fg = (mask.numpy() > 0).astype(np.uint8)
-                        num_labels, labels = cv.connectedComponents(fg, connectivity=8)
-                        mask = torch.from_numpy(labels.astype(np.uint8))
-                    
-                    mask_list.append(mask)
-                else:
-                    # Fallback: empty integer label map (background only)
-                    mask_list.append(torch.zeros((self.H, self.W), dtype=torch.uint8))
+                mask_list.append(self._load_single_sam_mask(frame_path))
             
             if len(mask_list) == len(picks):
                 # Stack: (T, S, H, W) for legacy or (T, H, W) for optimized

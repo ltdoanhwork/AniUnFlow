@@ -70,6 +70,12 @@ class LossConfig:
     segment_consistency: float = 0.0    # Within-segment flow coherence
     boundary_aware_smooth: float = 0.0  # Suppress smoothness at boundaries
 
+    # === Multi-frame / uncertainty regularization ===
+    tri_cycle_weight: float = 0.0
+    uncertainty_reg_weight: float = 0.0
+    occlusion_reg_weight: float = 0.0
+    occlusion_prior: float = 0.15
+
 
 @dataclass 
 class ModelConfig:
@@ -113,6 +119,9 @@ class ModelConfig:
     refiner_prior_flow_init_clip: float = 0.0
     refiner_delta_damping: float = 1.0
     refiner_delta_damping_decay: float = 1.0
+    predict_uncertainty: bool = False
+    predict_occlusion: bool = False
+    enable_triframe_head: bool = False
     
     # Dropout
     dropout: float = 0.0
