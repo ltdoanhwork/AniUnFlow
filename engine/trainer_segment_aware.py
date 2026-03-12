@@ -313,6 +313,10 @@ class SegmentAwareTrainer:
             "enable_long_gap": None,
             "enable_sam_losses": None,
         }
+        # Global numerical guards against occasional non-finite spikes.
+        self.nan_guard_enabled = bool(cfg.get("runtime", {}).get("nan_guard_enabled", True))
+        self.nan_guard_flow_clip = float(cfg.get("runtime", {}).get("nan_guard_flow_clip", 5e2))
+        self._nan_warn_count = 0
 
     def _current_sam_scale(self) -> float:
         """Epoch-based SAM loss scaling (for 2-stage training schedules)."""
@@ -418,6 +422,30 @@ class SegmentAwareTrainer:
                     sub.topk = int(topk)
                 except Exception:
                     continue
+
+    def _sanitize_tensor(self, x: torch.Tensor) -> Tuple[torch.Tensor, int]:
+        """Replace non-finite values and clamp magnitude to keep training stable."""
+        if not torch.is_tensor(x):
+            return x, 0
+        bad = (~torch.isfinite(x)).sum().item()
+        if bad > 0:
+            x = torch.nan_to_num(
+                x,
+                nan=0.0,
+                posinf=self.nan_guard_flow_clip,
+                neginf=-self.nan_guard_flow_clip,
+            )
+        x = x.clamp(min=-self.nan_guard_flow_clip, max=self.nan_guard_flow_clip)
+        return x, int(bad)
+
+    def _sanitize_tensor_list(self, xs: List[torch.Tensor]) -> Tuple[List[torch.Tensor], int]:
+        ys = []
+        total_bad = 0
+        for x in xs:
+            y, bad = self._sanitize_tensor(x)
+            ys.append(y)
+            total_bad += bad
+        return ys, total_bad
 
     def _current_runtime_stage(self) -> Tuple[Optional[int], Optional[Dict[str, Any]]]:
         """Return active runtime stage (index, dict) for current epoch."""
@@ -834,6 +862,30 @@ class SegmentAwareTrainer:
                     )
                     flows_fw = out_fw["flows_fw"]
                     flows_bw = out_fw["flows_bw"]
+                    if self.nan_guard_enabled:
+                        flows_fw, bad_fw = self._sanitize_tensor_list(flows_fw)
+                        flows_bw, bad_bw = self._sanitize_tensor_list(flows_bw)
+                        out_fw["flows_fw"] = flows_fw
+                        out_fw["flows_bw"] = flows_bw
+                        if out_fw.get("flows_long"):
+                            out_fw["flows_long"], bad_long = self._sanitize_tensor_list(out_fw["flows_long"])
+                        else:
+                            bad_long = 0
+                        if out_fw.get("uncertainty_fw"):
+                            out_fw["uncertainty_fw"], bad_u = self._sanitize_tensor_list(out_fw["uncertainty_fw"])
+                        else:
+                            bad_u = 0
+                        if out_fw.get("occlusion_fw"):
+                            out_fw["occlusion_fw"], bad_o = self._sanitize_tensor_list(out_fw["occlusion_fw"])
+                        else:
+                            bad_o = 0
+                        bad_total = bad_fw + bad_bw + bad_long + bad_u + bad_o
+                        if bad_total > 0 and self._nan_warn_count < 20:
+                            print(
+                                f"[NaNGuard] Sanitized {bad_total} non-finite values "
+                                f"at epoch={self.current_epoch} step={self.global_step}"
+                            )
+                            self._nan_warn_count += 1
 
                     # Unsupervised photometric loss
                     use_occ_mask = not (
@@ -929,6 +981,16 @@ class SegmentAwareTrainer:
 
                     # Re-index backward flows
                     flows_bw = [flows_bw_rev[len(flows_bw_rev) - 1 - k] for k in range(len(flows_fw))]
+                    if self.nan_guard_enabled:
+                        flows_fw, bad_fw = self._sanitize_tensor_list(flows_fw)
+                        flows_bw, bad_bw = self._sanitize_tensor_list(flows_bw)
+                        bad_total = bad_fw + bad_bw
+                        if bad_total > 0 and self._nan_warn_count < 20:
+                            print(
+                                f"[NaNGuard] Sanitized {bad_total} non-finite values "
+                                f"at epoch={self.current_epoch} step={self.global_step}"
+                            )
+                            self._nan_warn_count += 1
 
                     use_occ_mask = not (
                         self.disable_occ_during_warmup and self.global_step < self.warmup_steps
@@ -971,6 +1033,16 @@ class SegmentAwareTrainer:
                         epe = _masked_epe(pred, gt).mean()
                         total_loss = total_loss + self.w_epe_sup * epe
                         loss_dict["epe_sup"] = epe.item()
+
+                if not torch.isfinite(total_loss):
+                    if self._nan_warn_count < 20:
+                        print(
+                            f"[NaNGuard] Non-finite total_loss at epoch={self.current_epoch} "
+                            f"step={self.global_step}. Skipping batch."
+                        )
+                        self._nan_warn_count += 1
+                    self.optimizer.zero_grad(set_to_none=True)
+                    continue
             
             # Backward
             loss_scaled = total_loss / self.accum_steps
@@ -980,7 +1052,16 @@ class SegmentAwareTrainer:
             if (batch_idx + 1) % self.accum_steps == 0:
                 if self.clip_grad > 0:
                     self.scaler.unscale_(self.optimizer)
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.clip_grad)
+                    grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.clip_grad)
+                    if not torch.isfinite(grad_norm):
+                        if self._nan_warn_count < 20:
+                            print(
+                                f"[NaNGuard] Non-finite gradient norm at epoch={self.current_epoch} "
+                                f"step={self.global_step}. Skipping optimizer step."
+                            )
+                            self._nan_warn_count += 1
+                        self.optimizer.zero_grad(set_to_none=True)
+                        continue
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
                 self.optimizer.zero_grad(set_to_none=True)
@@ -1111,6 +1192,14 @@ class SegmentAwareTrainer:
                 out = self.model(clip, sam_masks=segment_masks)
             
             flows = out["flows"]
+            if self.nan_guard_enabled:
+                flows, bad = self._sanitize_tensor_list(flows)
+                if bad > 0 and self._nan_warn_count < 20:
+                    print(
+                        f"[NaNGuard][Val] Sanitized {bad} non-finite values "
+                        f"at epoch={epoch} step={self.global_step}"
+                    )
+                    self._nan_warn_count += 1
             
             # Get GT if available
             gt_any = batch.get("flow", batch.get("flow_list", None))
@@ -1134,6 +1223,7 @@ class SegmentAwareTrainer:
                         pred[:, 0] *= wg / float(wp)
                         pred[:, 1] *= hg / float(hp)
                     
+                    finite_pix = torch.isfinite(pred).all(dim=1) & torch.isfinite(gt).all(dim=1)
                     epe_map = torch.norm(pred - gt, dim=1)
                     mag = torch.norm(gt, dim=1)
                     
@@ -1144,6 +1234,9 @@ class SegmentAwareTrainer:
                         valid = resize_mask(valid_any, gt.shape[-2:], device)
                         if valid.dim() == 3 and valid.shape[0] == 1:
                             valid = valid.expand(B, -1, -1)
+                    valid = valid & finite_pix
+                    if valid.sum().item() == 0:
+                        continue
                     
                     # Overall EPE
                     epe_all_list.append(epe_map[valid].cpu().numpy())
