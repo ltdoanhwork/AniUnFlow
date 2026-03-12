@@ -80,3 +80,29 @@ models/
 78: ```
 79: 
 80: ---
+
+## Parallel AnimeRun Research Branches
+
+Two large unsupervised directions now live side by side:
+
+- `V4 Hybrid SAM`: dense token matching first, SAM guidance and iterative refinement second.
+- `V5 Object Memory`: SAM object slots first, affine/layered object motion first, dense residual correction second.
+
+V5 documentation:
+
+- [docs/architecture_v5_object_memory.md](docs/architecture_v5_object_memory.md)
+- Main config: `configs/v5_object_memory_sam_parallel.yaml`
+
+```bash
+# Train V5 object-memory branch
+python scripts/train_unsup_animerun.py --config configs/v5_object_memory_sam_parallel.yaml
+
+# Collect comparable CSV + Markdown reports
+python scripts/collect_animerun_results.py
+```
+
+V5 ablations:
+
+- `configs/v5_object_memory_sam_no_layer_order.yaml`
+- `configs/v5_object_memory_sam_no_temporal_memory.yaml`
+- `configs/v5_object_memory_sam_affine_only.yaml`

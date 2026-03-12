@@ -1,0 +1,158 @@
+seed: 1337
+workspace: workspaces/v5_object_memory_sam_parallel
+
+data:
+  name: animerun_clip
+  train_root: data/AnimeRun_v2/
+  val_root: data/AnimeRun_v2/
+  T: 5
+  stride_min: 1
+  stride_max: 3
+  crop_size: [256, 512]
+  resize: true
+  keep_aspect: false
+  load_sam_masks: true
+  sam_mask_dir: data/AnimeRun_v2/SAM_Masks_v2
+  sam_mask_cache_size: 4096
+  val_load_sam_masks: true
+  val_sam_mask_dir: data/AnimeRun_v2/SAM_Masks_v2
+  val_sam_mask_cache_size: 1024
+  batch_size: 4
+  num_workers: 8
+  persistent_workers: true
+  prefetch_factor: 6
+  val_num_workers: 4
+  val_persistent_workers: true
+  val_prefetch_factor: 3
+  shuffle: true
+  drop_last: true
+
+model:
+  name: AniFlowFormerTV5
+  backbone: v5_object_memory_sam
+  enc_channels: 32
+  slot_dim: 128
+  slot_hidden_dim: 192
+  temporal_memory_depth: 2
+  temporal_memory_heads: 4
+  temporal_memory_dropout: 0.0
+  num_slots: 32
+  overlap_prior_weight: 2.0
+  use_long_gap_matching: true
+  predict_layer_order: true
+  residual_hidden_dim: 96
+  residual_blocks: 3
+  residual_boundary_scale: 0.8
+
+sam:
+  enabled: true
+  use_encoder_features: true
+  use_mask_guidance: true
+  encoder_checkpoint: models/sam2/checkpoints/sam2.1_hiera_tiny.pt
+  encoder_config: configs/sam2.1/sam2.1_hiera_t.yaml
+  encoder_freeze: true
+  feature_dim: 256
+  feature_scales: [8, 16]
+  num_segments: 32
+  mask_cache_dir: data/AnimeRun_v2/SAM_Masks_v2
+
+loss:
+  photo: 1.0
+  photo_ssim_alpha: 0.85
+  smooth: 0.02
+  consistency: 0.02
+  mag_reg: 0.06
+  min_flow_mag: 0.55
+  warmup_steps: 1500
+  disable_occ_during_warmup: true
+  occ_aware_start_epoch: 6
+  segment_warp: 0.12
+  piecewise_residual: 0.03
+  segment_cycle: 0.04
+  layered_order: 0.03
+  boundary_residual: 0.02
+  long_gap_photo_weight: 0.08
+  long_gap_consistency_weight: 0.03
+  long_gap_start_epoch: 12
+  long_gap_ramp_epochs: 8
+
+optim:
+  lr: 5.0e-5
+  weight_decay: 1.0e-4
+  epochs: 60
+  warmup_epochs: 4
+  clip: 0.7
+  accum_steps: 2
+  freeze_encoder_epoch: 0
+  scheduler:
+    type: onecycle
+    max_lr: 8.0e-5
+    pct_start: 0.12
+    div_factor: 10.0
+    final_div_factor: 1000.0
+    anneal_strategy: cos
+
+logging:
+  use_tb: true
+  tb_dir: tb_v5_object_memory_sam_parallel
+  log_every: 100
+
+validation:
+  every_n_epochs: 4
+  early_stop_delta: 0.5
+  early_stop_patience: 6
+
+teacher:
+  enabled: true
+  ema_decay: 0.999
+  start_step: 2000
+  distill_weight: 0.06
+  confidence_threshold: 0.7
+  every_n_steps: 4
+
+runtime:
+  nan_guard_enabled: true
+  nan_guard_flow_clip: 500.0
+  schedule:
+    - start_epoch: 1
+      end_epoch: 6
+      stride_min: 1
+      stride_max: 1
+      enable_occ_aware: false
+      enable_long_gap: false
+      enable_residual_branch: false
+      enable_segment_cycle: false
+      enable_layered_order: false
+    - start_epoch: 7
+      end_epoch: 16
+      stride_min: 1
+      stride_max: 2
+      enable_occ_aware: true
+      enable_long_gap: false
+      enable_residual_branch: true
+      enable_segment_cycle: false
+      enable_layered_order: true
+    - start_epoch: 17
+      end_epoch: 32
+      stride_min: 1
+      stride_max: 2
+      enable_occ_aware: true
+      enable_long_gap: true
+      enable_residual_branch: true
+      enable_segment_cycle: true
+      enable_layered_order: true
+    - start_epoch: 33
+      end_epoch: 60
+      stride_min: 1
+      stride_max: 3
+      enable_occ_aware: true
+      enable_long_gap: true
+      enable_residual_branch: true
+      enable_segment_cycle: true
+      enable_layered_order: true
+
+ckpt:
+  save_every: 5
+  keep_last: 3
+  save_best: true
+

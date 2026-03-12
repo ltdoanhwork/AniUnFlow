@@ -330,7 +330,12 @@ def main():
             clip = clip.float() / 255.0
         
         with torch.amp.autocast(device_type="cuda", enabled=torch.cuda.is_available()):
-            out = trainer.model(clip)
+            model_kwargs = {}
+            if "sam_masks" in batch:
+                model_kwargs["sam_masks"] = batch["sam_masks"].to(device)
+            if "sam_features" in batch:
+                model_kwargs["sam_features"] = batch["sam_features"]
+            out = trainer.model(clip, **model_kwargs)
             print(f"Model output keys: {out.keys()}")
             print(f"Flows: {len(out['flows'])} predictions")
             if out['flows']:

@@ -31,6 +31,7 @@ from tqdm import tqdm
 # Model imports
 from models import AniFlowFormerT, ModelConfig as AFConfig
 from models.aniunflow_v4.model import AniFlowFormerTV4, V4Config
+from models.aniunflow_v5 import AniFlowFormerTV5, V5Config, V5ObjectMemoryLossBundle
 from models.aniunflow.losses import UnsupervisedFlowLoss as AFTLosses
 
 # Segment-aware imports
@@ -220,6 +221,11 @@ class SegmentAwareTrainer:
         self.use_segment_losses = self._has_segment_losses()
         if self.use_segment_losses:
             self.segment_loss = build_segment_aware_losses(cfg)
+        else:
+            self.segment_loss = None
+        self.v5_loss_bundle: Optional[V5ObjectMemoryLossBundle] = None
+        if isinstance(self.model, AniFlowFormerTV5):
+            self.v5_loss_bundle = V5ObjectMemoryLossBundle.from_config(cfg)
         
         # SAM-2 guidance module
         sam_cfg = cfg.get("sam", {})
@@ -246,6 +252,7 @@ class SegmentAwareTrainer:
         # Scheduler (configured later)
         self.scheduler = None
         self.sched_per_batch = False
+        self._resume_scheduler_state = None
         
         # AMP scaler
         self.scaler = torch.amp.GradScaler("cuda", enabled=torch.cuda.is_available())
@@ -264,7 +271,7 @@ class SegmentAwareTrainer:
         self.teacher_conf_threshold = float(teacher_cfg.get("confidence_threshold", 0.0))
         self.teacher_every_n_steps = max(1, int(teacher_cfg.get("every_n_steps", 1)))
         self.teacher_model: Optional[nn.Module] = None
-        if self.teacher_enabled and isinstance(self.model, AniFlowFormerTV4):
+        if self.teacher_enabled and isinstance(self.model, (AniFlowFormerTV4, AniFlowFormerTV5)):
             self.teacher_model = copy.deepcopy(self.model).to(self.device)
             self.teacher_model.eval()
             for p in self.teacher_model.parameters():
@@ -311,11 +318,17 @@ class SegmentAwareTrainer:
             "refiner_iters": None,
             "matcher_topk": None,
             "refiner_gradient_checkpointing": None,
+            "enable_residual_branch": None,
+            "enable_segment_cycle": None,
+            "enable_layered_order": None,
         }
         self._runtime_overrides: Dict[str, Optional[bool]] = {
             "enable_occ_aware": None,
             "enable_long_gap": None,
             "enable_sam_losses": None,
+            "enable_residual_branch": None,
+            "enable_segment_cycle": None,
+            "enable_layered_order": None,
         }
         # Global numerical guards against occasional non-finite spikes.
         self.nan_guard_enabled = bool(cfg.get("runtime", {}).get("nan_guard_enabled", True))
@@ -412,15 +425,38 @@ class SegmentAwareTrainer:
             losses.append((diff * conf).sum() / (conf.sum() + 1e-6))
 
         if not losses:
+            flow_loss = None
+        else:
+            flow_loss = sum(losses) / len(losses)
+
+        sp = student_out.get("match_probs_fw", [])
+        tp = teacher_out.get("match_probs_fw", [])
+        prob_losses = []
+        for i in range(min(len(sp), len(tp))):
+            s_prob = sp[i]
+            t_prob = tp[i].detach()
+            if t_prob.shape != s_prob.shape:
+                continue
+            prob_losses.append((s_prob - t_prob).abs().mean())
+
+        if flow_loss is None and not prob_losses:
             return None
-        return sum(losses) / len(losses)
+        if flow_loss is None:
+            return sum(prob_losses) / len(prob_losses)
+        if not prob_losses:
+            return flow_loss
+        return flow_loss + 0.25 * (sum(prob_losses) / len(prob_losses))
 
     @torch.no_grad()
     def _update_ema_teacher(self):
         if self.teacher_model is None:
             return
         decay = max(0.0, min(0.99999, self.teacher_ema_decay))
-        for t_param, s_param in zip(self.teacher_model.parameters(), self.model.parameters()):
+        teacher_params = dict(self.teacher_model.named_parameters())
+        for name, s_param in self.model.named_parameters():
+            t_param = teacher_params.get(name, None)
+            if t_param is None or t_param.shape != s_param.shape:
+                continue
             t_param.data.mul_(decay).add_(s_param.data, alpha=1.0 - decay)
 
     @staticmethod
@@ -543,6 +579,9 @@ class SegmentAwareTrainer:
                 "enable_occ_aware": None,
                 "enable_long_gap": None,
                 "enable_sam_losses": None,
+                "enable_residual_branch": None,
+                "enable_segment_cycle": None,
+                "enable_layered_order": None,
             }
             return
 
@@ -550,6 +589,9 @@ class SegmentAwareTrainer:
             "enable_occ_aware": stage.get("enable_occ_aware", None),
             "enable_long_gap": stage.get("enable_long_gap", None),
             "enable_sam_losses": stage.get("enable_sam_losses", None),
+            "enable_residual_branch": stage.get("enable_residual_branch", None),
+            "enable_segment_cycle": stage.get("enable_segment_cycle", None),
+            "enable_layered_order": stage.get("enable_layered_order", None),
         }
 
         changed_msgs: List[str] = []
@@ -603,6 +645,13 @@ class SegmentAwareTrainer:
                 if getattr(self.model, "iterative_refiner", None) is not None:
                     self.model.iterative_refiner.use_gradient_checkpointing = refiner_ckpt
                 changed_msgs.append(f"refiner_ckpt={refiner_ckpt}")
+
+        for key in ("enable_residual_branch", "enable_segment_cycle", "enable_layered_order"):
+            if key in stage:
+                value = bool(stage[key])
+                if self._runtime_state.get(key) != value:
+                    self._runtime_state[key] = value
+                    changed_msgs.append(f"{key}={value}")
 
         if self._runtime_state.get("stage_idx") != stage_idx:
             self._runtime_state["stage_idx"] = stage_idx
@@ -678,6 +727,15 @@ class SegmentAwareTrainer:
             print("[Trainer] Using AniFlowFormerTV3 with SAM guidance")
             return AniFlowFormerTV3(v3_config)
         else:
+            is_v5_cfg = (
+                model_name == "AniFlowFormerTV5"
+                or str(mcfg.get("backbone", "")).lower() == "v5_object_memory_sam"
+            )
+            if is_v5_cfg:
+                print("[Trainer] Initializing AniFlowFormerTV5...")
+                config = V5Config.from_dict(self.cfg)
+                return AniFlowFormerTV5(config)
+
             # V4 model detection:
             # - explicit model name, or
             # - flat V4-style model config without nested "args"
@@ -768,6 +826,101 @@ class SegmentAwareTrainer:
         else:
             self.scheduler = None
 
+    def _restore_scheduler_state(self):
+        """Restore scheduler state if a compatible checkpoint state was loaded."""
+        if self.scheduler is None or self._resume_scheduler_state is None:
+            return False
+
+        sched_state = self._resume_scheduler_state
+        ckpt_total = sched_state.get("total_steps", None) if isinstance(sched_state, dict) else None
+        curr_total = getattr(self.scheduler, "total_steps", None)
+        if ckpt_total is not None and curr_total is not None and int(ckpt_total) != int(curr_total):
+            print(
+                "[Trainer] Skipping scheduler state from checkpoint: "
+                f"total_steps mismatch ({ckpt_total} vs {curr_total})."
+            )
+            self._resume_scheduler_state = None
+            return False
+
+        try:
+            self.scheduler.load_state_dict(sched_state)
+            print("[Trainer] Restored scheduler state from checkpoint.")
+            restored = True
+        except Exception as exc:
+            print(f"[Trainer] Skipping scheduler state from checkpoint: {exc}")
+            restored = False
+        finally:
+            self._resume_scheduler_state = None
+        return restored
+
+    def _fast_forward_scheduler(self):
+        """
+        If we resume without a compatible scheduler state, advance a per-batch
+        scheduler to the already-completed global step count.
+        """
+        if self.scheduler is None or not self.sched_per_batch or self.global_step <= 0:
+            return
+        max_steps = getattr(self.scheduler, "total_steps", None)
+        steps_to_advance = int(self.global_step)
+        if max_steps is not None:
+            steps_to_advance = min(steps_to_advance, max(0, int(max_steps) - 1))
+        if steps_to_advance <= 0:
+            return
+        for _ in range(steps_to_advance):
+            self.scheduler.step()
+        print(f"[Trainer] Fast-forwarded scheduler by {steps_to_advance} steps.")
+
+    def _load_module_state(self, module: nn.Module, state_dict: Dict[str, torch.Tensor], module_name: str):
+        """
+        Load checkpoint weights with compatibility filtering for transient buffers
+        such as lazily-created positional encodings.
+        """
+        current_state = module.state_dict()
+        filtered_state = {}
+        dropped_keys = []
+        shape_mismatch = []
+
+        for key, value in state_dict.items():
+            if key not in current_state:
+                dropped_keys.append(key)
+                continue
+            target_value = current_state[key]
+            if hasattr(target_value, "shape") and hasattr(value, "shape") and target_value.shape != value.shape:
+                shape_mismatch.append((key, tuple(value.shape), tuple(target_value.shape)))
+                continue
+            filtered_state[key] = value
+
+        missing_keys, unexpected_keys = module.load_state_dict(filtered_state, strict=False)
+
+        if dropped_keys:
+            preview = ", ".join(dropped_keys[:5])
+            suffix = " ..." if len(dropped_keys) > 5 else ""
+            print(
+                f"[Trainer] Ignored {len(dropped_keys)} unexpected {module_name} checkpoint keys: "
+                f"{preview}{suffix}"
+            )
+        if shape_mismatch:
+            preview = ", ".join(f"{k}:{src}->{dst}" for k, src, dst in shape_mismatch[:3])
+            suffix = " ..." if len(shape_mismatch) > 3 else ""
+            print(
+                f"[Trainer] Ignored {len(shape_mismatch)} shape-mismatched {module_name} keys: "
+                f"{preview}{suffix}"
+            )
+        if missing_keys:
+            preview = ", ".join(missing_keys[:5])
+            suffix = " ..." if len(missing_keys) > 5 else ""
+            print(
+                f"[Trainer] Missing {len(missing_keys)} {module_name} keys after checkpoint load: "
+                f"{preview}{suffix}"
+            )
+        if unexpected_keys:
+            preview = ", ".join(unexpected_keys[:5])
+            suffix = " ..." if len(unexpected_keys) > 5 else ""
+            print(
+                f"[Trainer] Unexpected {module_name} keys after filtered load: "
+                f"{preview}{suffix}"
+            )
+
     def _maybe_freeze_encoder(self):
         """Freeze selected encoder levels after configured epoch."""
         if self._encoder_frozen:
@@ -807,8 +960,19 @@ class SegmentAwareTrainer:
         """Main training loop."""
         epochs = int(self.cfg["optim"]["epochs"])
         self._init_scheduler(train_loader, epochs)
-        
-        for epoch in range(1, epochs + 1):
+        restored_scheduler = self._restore_scheduler_state()
+        if not restored_scheduler:
+            self._fast_forward_scheduler()
+
+        start_epoch = max(1, int(self.current_epoch) + 1)
+        if start_epoch > epochs:
+            print(
+                f"[Trainer] Checkpoint is already at epoch {self.current_epoch}, "
+                f"which is >= configured epochs ({epochs}). Nothing to do."
+            )
+            return
+
+        for epoch in range(start_epoch, epochs + 1):
             self.current_epoch = epoch
             t0 = time.time()
             self._maybe_freeze_encoder()
@@ -914,12 +1078,108 @@ class SegmentAwareTrainer:
                 # Use pre-loaded masks if available (faster)
                 if "sam_masks" in batch:
                     segment_masks = batch["sam_masks"]
+                elif isinstance(self.model, AniFlowFormerTV5):
+                    enable_residual_branch = self._runtime_overrides["enable_residual_branch"] is not False
+                    out_fw = self.model(
+                        clip,
+                        sam_masks=segment_masks,
+                        sam_features=sam_features,
+                        return_losses=True,
+                        enable_residual_branch=enable_residual_branch,
+                    )
+                    flows_fw = out_fw["flows_fw"]
+                    flows_bw = out_fw["flows_bw"]
+                    if self.nan_guard_enabled:
+                        flows_fw, bad_fw = self._sanitize_tensor_list(flows_fw)
+                        flows_bw, bad_bw = self._sanitize_tensor_list(flows_bw)
+                        out_fw["flows_fw"] = flows_fw
+                        out_fw["flows_bw"] = flows_bw
+                        if out_fw.get("flows_long"):
+                            out_fw["flows_long"], bad_long = self._sanitize_tensor_list(out_fw["flows_long"])
+                        else:
+                            bad_long = 0
+                        if out_fw.get("residual_flow_fw"):
+                            out_fw["residual_flow_fw"], bad_res = self._sanitize_tensor_list(out_fw["residual_flow_fw"])
+                        else:
+                            bad_res = 0
+                        bad_total = bad_fw + bad_bw + bad_long + bad_res
+                        if bad_total > 0 and self._nan_warn_count < 20:
+                            print(
+                                f"[NaNGuard] Sanitized {bad_total} non-finite values "
+                                f"at epoch={self.current_epoch} step={self.global_step}"
+                            )
+                            self._nan_warn_count += 1
+
+                    use_occ_mask = not (
+                        self.disable_occ_during_warmup and self.global_step < self.warmup_steps
+                    )
+                    use_occ_mask = use_occ_mask and (self.current_epoch >= self.occ_aware_start_epoch)
+                    if self._runtime_overrides["enable_occ_aware"] is False:
+                        use_occ_mask = False
+                    if self._runtime_overrides["enable_occ_aware"] is True:
+                        use_occ_mask = not (
+                            self.disable_occ_during_warmup and self.global_step < self.warmup_steps
+                        )
+
+                    long_gap_photo_w, long_gap_cons_w = self._current_long_gap_weights()
+                    if self._runtime_overrides["enable_long_gap"] is False:
+                        long_gap_photo_w, long_gap_cons_w = 0.0, 0.0
+                    loss_dict = self.base_loss.unsup_bidirectional(
+                        clip,
+                        flows_fw,
+                        flows_bw,
+                        use_occ_mask=use_occ_mask,
+                        long_gap_photo_weight=long_gap_photo_w,
+                        long_gap_consistency_weight=long_gap_cons_w,
+                    )
+                    loss_dict["long_gap_photo_w"] = long_gap_photo_w
+                    loss_dict["long_gap_cons_w"] = long_gap_cons_w
+                    total_loss = loss_dict["total"]
+
+                    if self.v5_loss_bundle is not None and segment_masks is not None:
+                        v5_losses = self.v5_loss_bundle(
+                            sam_masks=segment_masks,
+                            model_out=out_fw,
+                            enable_segment_cycle=self._runtime_overrides["enable_segment_cycle"] is not False,
+                            enable_layered_order=self._runtime_overrides["enable_layered_order"] is not False,
+                            enable_residual_terms=enable_residual_branch,
+                        )
+                        total_loss = total_loss + v5_losses["total"]
+                        loss_dict["v5_segment_warp"] = float(v5_losses["segment_warp"].detach())
+                        loss_dict["v5_piecewise_residual"] = float(v5_losses["piecewise_residual"].detach())
+                        loss_dict["v5_segment_cycle"] = float(v5_losses["segment_cycle"].detach())
+                        loss_dict["v5_layered_order"] = float(v5_losses["layered_order"].detach())
+                        loss_dict["v5_boundary_residual"] = float(v5_losses["boundary_residual"].detach())
+                        loss_dict["v5_total"] = float(v5_losses["total"].detach())
+
+                    if (
+                        self.teacher_model is not None
+                        and self.teacher_distill_weight > 0
+                        and self.global_step >= self.teacher_start_step
+                        and (self.global_step % self.teacher_every_n_steps == 0)
+                    ):
+                        with torch.no_grad():
+                            teacher_out = self.teacher_model(
+                                clip,
+                                sam_masks=segment_masks,
+                                sam_features=sam_features,
+                                return_losses=False,
+                                enable_residual_branch=enable_residual_branch,
+                            )
+                        distill_loss = self._compute_distill_loss(out_fw, teacher_out)
+                        if distill_loss is not None:
+                            total_loss = total_loss + self.teacher_distill_weight * distill_loss
+                            loss_dict["distill"] = float(distill_loss.detach())
+
                 else:
                     # Fallback to online generation (slower)
                     with torch.no_grad():
                         segment_masks = self.sam_guidance.extract_segment_masks(clip)
                 # Boundary maps are needed only for non-V4 segment-aware loss path.
-                need_boundary_maps = self.use_segment_losses and not isinstance(self.model, AniFlowFormerTV4)
+                need_boundary_maps = self.use_segment_losses and not isinstance(
+                    self.model,
+                    (AniFlowFormerTV4, AniFlowFormerTV5),
+                )
                 if need_boundary_maps and segment_masks is not None:
                     with torch.no_grad():
                         boundary_maps = self.sam_guidance.compute_boundary_maps(segment_masks)
@@ -1459,12 +1719,16 @@ class SegmentAwareTrainer:
     def load_checkpoint(self, path: str, load_optimizer: bool = True):
         """Load checkpoint."""
         ckpt = torch.load(path, map_location=self.device)
-        self.model.load_state_dict(ckpt["state_dict"])
+        self._load_module_state(self.model, ckpt["state_dict"], "model")
         if self.teacher_model is not None and ckpt.get("teacher_state_dict") is not None:
-            self.teacher_model.load_state_dict(ckpt["teacher_state_dict"])
+            self._load_module_state(self.teacher_model, ckpt["teacher_state_dict"], "teacher")
         
         if load_optimizer and "optimizer" in ckpt:
-            self.optimizer.load_state_dict(ckpt["optimizer"])
+            try:
+                self.optimizer.load_state_dict(ckpt["optimizer"])
+            except Exception as exc:
+                print(f"[Trainer] Skipping optimizer state from checkpoint: {exc}")
+        self._resume_scheduler_state = ckpt.get("scheduler", None)
         
         if "epoch" in ckpt:
             self.current_epoch = ckpt["epoch"]

@@ -26,6 +26,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SEARCH_ROOTS = [ROOT / "workspaces", ROOT / "work_dirs", ROOT / "outputs"]
 REPORT_DIR = ROOT / "reports"
 REPORT_PATH = REPORT_DIR / "animerun_results_table.csv"
+REPORT_MD_PATH = REPORT_DIR / "animerun_results_table.md"
 TB_TIMEOUT_SEC = 5
 
 METRIC_ORDER = [
@@ -96,6 +97,8 @@ def path_indicates_animerun(path: Path) -> bool:
 
 def infer_family(run_dir: Path, cfg: Dict[str, Any]) -> str:
     path_lower = relpath(run_dir).lower()
+    if "v5_object_memory" in path_lower:
+        return "AniFlowFormerTV5"
     if "upflow" in path_lower:
         return "UPFlow"
     if "unflow" in path_lower and "unsamflow" not in path_lower:
@@ -119,6 +122,21 @@ def infer_family(run_dir: Path, cfg: Dict[str, Any]) -> str:
         if model_cfg.get("name"):
             return str(model_cfg["name"])
     return run_dir.name
+
+
+def infer_research_branch(run_dir: Path, cfg: Dict[str, Any]) -> str:
+    path_lower = relpath(run_dir).lower()
+    model_cfg = cfg.get("model", {}) if isinstance(cfg, dict) else {}
+    backbone = str(model_cfg.get("backbone", "")).lower() if isinstance(model_cfg, dict) else ""
+    model_name = str(model_cfg.get("name", "")).lower() if isinstance(model_cfg, dict) else ""
+
+    if "v5_object_memory" in path_lower or "v5_object_memory" in backbone or "aniflowformertv5" in model_name:
+        return "V5 Object Memory"
+    if "v4_6" in path_lower or "v4_5_hybrid_sam" in backbone:
+        return "V4 Hybrid SAM"
+    if "unsamflow" in path_lower:
+        return "UnSAMFlow"
+    return "Other"
 
 
 def normalize_metric_name(name: str) -> str:
@@ -164,6 +182,7 @@ def make_base_row(run_dir: Path, cfg_path: Optional[Path], cfg: Dict[str, Any]) 
     return {
         "run_dir": relpath(run_dir),
         "run_name": run_dir.name,
+        "research_branch": infer_research_branch(run_dir, cfg),
         "model_family": infer_family(run_dir, cfg),
         "workspace_cfg": workspace or "",
         "config_path": relpath(cfg_path) if cfg_path else "",
@@ -434,6 +453,7 @@ def collect_rows_for_run(run_dir: Path) -> List[Dict[str, Any]]:
 def final_columns(rows: List[Dict[str, Any]]) -> List[str]:
     leading = [
         "run_name",
+        "research_branch",
         "model_family",
         "run_dir",
         "source_kind",
@@ -453,6 +473,25 @@ def final_columns(rows: List[Dict[str, Any]]) -> List[str]:
         key for row in rows for key in row.keys() if key not in seen
     )
     return leading + extra_metrics + trailing + extras
+
+
+def write_markdown(rows: List[Dict[str, Any]]) -> None:
+    columns = ["run_name", "research_branch", "model_family", "source_kind", "epe", "1px", "3px", "5px", "source_path"]
+    lines = [
+        "# AnimeRun Results",
+        "",
+        "| " + " | ".join(columns) + " |",
+        "| " + " | ".join(["---"] * len(columns)) + " |",
+    ]
+    for row in rows:
+        values = []
+        for col in columns:
+            value = row.get(col, "")
+            if isinstance(value, float):
+                value = f"{value:.6f}"
+            values.append(str(value))
+        lines.append("| " + " | ".join(values) + " |")
+    REPORT_MD_PATH.write_text("\n".join(lines) + "\n")
 
 
 def main() -> None:
@@ -477,6 +516,8 @@ def main() -> None:
         writer.writeheader()
         for row in rows:
             writer.writerow(row)
+
+    write_markdown(rows)
 
     print(f"Wrote {len(rows)} rows to {REPORT_PATH}")
 
