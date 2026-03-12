@@ -887,7 +887,12 @@ class SegmentAwareTrainer:
                     if self.occlusion_reg_weight > 0 and out_fw.get("occlusion_fw"):
                         occ = torch.cat([x.view(x.shape[0], -1) for x in out_fw["occlusion_fw"]], dim=1)
                         occ_target = torch.full_like(occ, self.occlusion_prior)
-                        occ_reg = F.binary_cross_entropy(occ.clamp(1e-4, 1.0 - 1e-4), occ_target)
+                        # BCE is unsafe under autocast; evaluate this term in fp32.
+                        with torch.amp.autocast(device_type="cuda", enabled=False):
+                            occ_reg = F.binary_cross_entropy(
+                                occ.float().clamp(1e-4, 1.0 - 1e-4),
+                                occ_target.float(),
+                            )
                         total_loss = total_loss + self.occlusion_reg_weight * occ_reg
                         loss_dict["occlusion_reg"] = float(occ_reg.detach())
 
