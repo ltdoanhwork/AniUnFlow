@@ -211,6 +211,10 @@ class SegmentAwareTrainer:
         self.uncertainty_reg_weight = float(_loss_get("uncertainty_reg_weight", None, 0.0))
         self.occlusion_reg_weight = float(_loss_get("occlusion_reg_weight", None, 0.0))
         self.occlusion_prior = float(_loss_get("occlusion_prior", None, 0.15))
+        self.tri_cycle_start_epoch = int(_loss_get("tri_cycle_start_epoch", None, 1))
+        self.tri_cycle_ramp_epochs = int(_loss_get("tri_cycle_ramp_epochs", None, 0))
+        self.uncertainty_reg_start_epoch = int(_loss_get("uncertainty_reg_start_epoch", None, 1))
+        self.occlusion_reg_start_epoch = int(_loss_get("occlusion_reg_start_epoch", None, 1))
         
         # Segment-aware losses
         self.use_segment_losses = self._has_segment_losses()
@@ -338,6 +342,14 @@ class SegmentAwareTrainer:
         p = (self.current_epoch - self.long_gap_start_epoch + 1) / float(self.long_gap_ramp_epochs)
         p = max(0.0, min(1.0, p))
         return self.long_gap_photo_weight * p, self.long_gap_consistency_weight * p
+
+    def _epoch_ramp(self, start_epoch: int, ramp_epochs: int = 0) -> float:
+        if self.current_epoch < start_epoch:
+            return 0.0
+        if ramp_epochs <= 0:
+            return 1.0
+        p = (self.current_epoch - start_epoch + 1) / float(ramp_epochs)
+        return float(max(0.0, min(1.0, p)))
 
     @staticmethod
     def _compose_flow(flow_01: torch.Tensor, flow_12: torch.Tensor) -> torch.Tensor:
@@ -754,17 +766,20 @@ class SegmentAwareTrainer:
             dt = time.time() - t0
             lr = self.optimizer.param_groups[0]["lr"]
             train_loss = train_metrics["loss"] / max(1, train_metrics["steps"])
+            nan_skips = int(train_metrics.get("nan_skips", 0))
             
             print(
                 f"[Epoch {epoch:03d}/{epochs}] "
                 f"train_loss={train_loss:.4f} "
                 f"val_epe={val_metric if val_metric is not None else 'N/A'} "
-                f"lr={lr:.2e} time={dt:.1f}s"
+                f"lr={lr:.2e} time={dt:.1f}s "
+                f"nan_skips={nan_skips}"
             )
             
             if self.writer:
                 self.writer.add_scalar("train/loss_epoch", train_loss, epoch)
                 self.writer.add_scalar("train/lr_epoch", lr, epoch)
+                self.writer.add_scalar("train/nan_skips_epoch", nan_skips, epoch)
                 if val_metric is not None and np.isfinite(val_metric):
                     self.writer.add_scalar("val/epe_epoch", val_metric, epoch)
             
@@ -806,7 +821,7 @@ class SegmentAwareTrainer:
     def _train_one_epoch(self, train_loader: DataLoader) -> Dict[str, float]:
         """Train for one epoch."""
         self.model.train()
-        accum = {"loss": 0.0, "steps": 0}
+        accum = {"loss": 0.0, "steps": 0, "nan_skips": 0}
         self.optimizer.zero_grad(set_to_none=True)
         
         pbar = tqdm(train_loader, desc=f"Epoch {self.current_epoch}")
@@ -922,21 +937,37 @@ class SegmentAwareTrainer:
                             loss_dict[f"sam_{name}"] = float(scaled.detach())
 
                     # Tri-frame cycle consistency (direct 0->2 vs composed 0->1->2).
-                    if self.tri_cycle_weight > 0:
+                    tri_w = self.tri_cycle_weight * self._epoch_ramp(
+                        self.tri_cycle_start_epoch,
+                        self.tri_cycle_ramp_epochs,
+                    )
+                    if tri_w > 0:
                         tri_cycle = self._tri_cycle_loss(
                             flows_fw=flows_fw,
                             flows_long=out_fw.get("flows_long", []),
                         )
-                        total_loss = total_loss + self.tri_cycle_weight * tri_cycle
+                        total_loss = total_loss + tri_w * tri_cycle
                         loss_dict["tri_cycle"] = float(tri_cycle.detach())
+                        loss_dict["tri_cycle_w"] = float(tri_w)
 
                     # Uncertainty and occlusion regularization to avoid degenerate predictions.
-                    if self.uncertainty_reg_weight > 0 and out_fw.get("uncertainty_fw"):
+                    ureg_w = (
+                        self.uncertainty_reg_weight
+                        if self.current_epoch >= self.uncertainty_reg_start_epoch
+                        else 0.0
+                    )
+                    oreg_w = (
+                        self.occlusion_reg_weight
+                        if self.current_epoch >= self.occlusion_reg_start_epoch
+                        else 0.0
+                    )
+                    if ureg_w > 0 and out_fw.get("uncertainty_fw"):
                         u = torch.cat([x.view(x.shape[0], -1) for x in out_fw["uncertainty_fw"]], dim=1)
                         uncertainty_reg = (u.clamp(min=-4.0, max=4.0) ** 2).mean()
-                        total_loss = total_loss + self.uncertainty_reg_weight * uncertainty_reg
+                        total_loss = total_loss + ureg_w * uncertainty_reg
                         loss_dict["uncertainty_reg"] = float(uncertainty_reg.detach())
-                    if self.occlusion_reg_weight > 0 and out_fw.get("occlusion_fw"):
+                        loss_dict["uncertainty_reg_w"] = float(ureg_w)
+                    if oreg_w > 0 and out_fw.get("occlusion_fw"):
                         occ = torch.cat([x.view(x.shape[0], -1) for x in out_fw["occlusion_fw"]], dim=1)
                         occ_target = torch.full_like(occ, self.occlusion_prior)
                         # BCE is unsafe under autocast; evaluate this term in fp32.
@@ -945,8 +976,9 @@ class SegmentAwareTrainer:
                                 occ.float().clamp(1e-4, 1.0 - 1e-4),
                                 occ_target.float(),
                             )
-                        total_loss = total_loss + self.occlusion_reg_weight * occ_reg
+                        total_loss = total_loss + oreg_w * occ_reg
                         loss_dict["occlusion_reg"] = float(occ_reg.detach())
+                        loss_dict["occlusion_reg_w"] = float(oreg_w)
 
                     # Online EMA-teacher distillation (single-stage).
                     if (
@@ -1042,6 +1074,7 @@ class SegmentAwareTrainer:
                         )
                         self._nan_warn_count += 1
                     self.optimizer.zero_grad(set_to_none=True)
+                    accum["nan_skips"] += 1
                     continue
             
             # Backward
@@ -1061,6 +1094,7 @@ class SegmentAwareTrainer:
                             )
                             self._nan_warn_count += 1
                         self.optimizer.zero_grad(set_to_none=True)
+                        accum["nan_skips"] += 1
                         continue
                 self.scaler.step(self.optimizer)
                 self.scaler.update()

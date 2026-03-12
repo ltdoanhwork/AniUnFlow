@@ -114,8 +114,12 @@ loss:
   long_gap_start_epoch: 8
   long_gap_ramp_epochs: 8
   tri_cycle_weight: 0.12
+  tri_cycle_start_epoch: 8
+  tri_cycle_ramp_epochs: 8
   uncertainty_reg_weight: 0.002
+  uncertainty_reg_start_epoch: 6
   occlusion_reg_weight: 0.01
+  occlusion_reg_start_epoch: 6
   occlusion_prior: 0.15
 
 optim:
@@ -154,6 +158,8 @@ teacher:
   every_n_steps: 4
 
 runtime:
+  nan_guard_enabled: true
+  nan_guard_flow_clip: 500.0
   schedule:
     - start_epoch: 1
       end_epoch: 4
