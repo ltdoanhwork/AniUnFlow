@@ -87,15 +87,21 @@ Two large unsupervised directions now live side by side:
 
 - `V4 Hybrid SAM`: dense token matching first, SAM guidance and iterative refinement second.
 - `V5 Object Memory`: SAM object slots first, affine/layered object motion first, dense residual correction second.
+- `V5.1 Object Memory Dense`: V5 object memory plus dense correlation and multi-scale dense refinement for large motion.
 
 V5 documentation:
 
 - [docs/architecture_v5_object_memory.md](docs/architecture_v5_object_memory.md)
+- [docs/architecture_v5_1_object_memory_dense.md](docs/architecture_v5_1_object_memory_dense.md)
 - Main config: `configs/v5_object_memory_sam_parallel.yaml`
+- Dense follow-up config: `configs/v5_1_object_memory_dense_parallel.yaml`
 
 ```bash
 # Train V5 object-memory branch
 python scripts/train_unsup_animerun.py --config configs/v5_object_memory_sam_parallel.yaml
+
+# Train V5.1 object-memory dense branch
+python scripts/train_unsup_animerun.py --config configs/v5_1_object_memory_dense_parallel.yaml
 
 # Collect comparable CSV + Markdown reports
 python scripts/collect_animerun_results.py

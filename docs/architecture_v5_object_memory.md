@@ -23,6 +23,8 @@ The output contract includes:
 - `occlusion_slots_fw`
 - `residual_flow_fw`
 
+For the dense follow-up branch, see [architecture_v5_1_object_memory_dense.md](architecture_v5_1_object_memory_dense.md).
+
 ## Training strategy
 
 V5 keeps the base unsupervised photometric loss, but adds object-memory specific regularization:
@@ -44,6 +46,7 @@ The default runtime schedule is staged:
 Main experiment config:
 
 - `configs/v5_object_memory_sam_parallel.yaml`
+- `configs/v5_1_object_memory_dense_parallel.yaml` for the dense large-motion follow-up branch
 
 Ablations:
 
@@ -53,4 +56,8 @@ Ablations:
 
 ## Reporting
 
-`scripts/collect_animerun_results.py` now emits both CSV and Markdown summaries and tags V5 runs as `V5 Object Memory` so they can be compared directly against `V4 Hybrid SAM`.
+`scripts/collect_animerun_results.py` now emits both CSV and Markdown summaries and tags:
+
+- `V5 Object Memory`
+- `V5.1 Object Memory Dense`
+- `V4 Hybrid SAM`

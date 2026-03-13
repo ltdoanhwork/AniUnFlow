@@ -15,6 +15,7 @@ from __future__ import annotations
 import copy
 import math
 import time
+import warnings
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 
@@ -727,9 +728,11 @@ class SegmentAwareTrainer:
             print("[Trainer] Using AniFlowFormerTV3 with SAM guidance")
             return AniFlowFormerTV3(v3_config)
         else:
+            backbone_name = str(mcfg.get("backbone", "")).lower()
             is_v5_cfg = (
                 model_name == "AniFlowFormerTV5"
-                or str(mcfg.get("backbone", "")).lower() == "v5_object_memory_sam"
+                or backbone_name == "v5_object_memory_sam"
+                or backbone_name.startswith("v5_1_object_memory")
             )
             if is_v5_cfg:
                 print("[Trainer] Initializing AniFlowFormerTV5...")
@@ -866,8 +869,14 @@ class SegmentAwareTrainer:
             steps_to_advance = min(steps_to_advance, max(0, int(max_steps) - 1))
         if steps_to_advance <= 0:
             return
-        for _ in range(steps_to_advance):
-            self.scheduler.step()
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message=r"Detected call of `lr_scheduler.step\(\)` before `optimizer.step\(\)`",
+                category=UserWarning,
+            )
+            for _ in range(steps_to_advance):
+                self.scheduler.step()
         print(f"[Trainer] Fast-forwarded scheduler by {steps_to_advance} steps.")
 
     def _load_module_state(self, module: nn.Module, state_dict: Dict[str, torch.Tensor], module_name: str):
@@ -1150,6 +1159,7 @@ class SegmentAwareTrainer:
                         loss_dict["v5_segment_cycle"] = float(v5_losses["segment_cycle"].detach())
                         loss_dict["v5_layered_order"] = float(v5_losses["layered_order"].detach())
                         loss_dict["v5_boundary_residual"] = float(v5_losses["boundary_residual"].detach())
+                        loss_dict["v5_dense_slot_consistency"] = float(v5_losses["dense_slot_consistency"].detach())
                         loss_dict["v5_total"] = float(v5_losses["total"].detach())
 
                     if (
@@ -1426,6 +1436,7 @@ class SegmentAwareTrainer:
                             )
                             self._nan_warn_count += 1
                         self.optimizer.zero_grad(set_to_none=True)
+                        self.scaler.update()
                         accum["nan_skips"] += 1
                         continue
                 self.scaler.step(self.optimizer)

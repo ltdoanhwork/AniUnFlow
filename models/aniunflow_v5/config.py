@@ -35,6 +35,7 @@ class V5LossConfig:
     segment_cycle: float = 0.04
     layered_order: float = 0.03
     boundary_residual: float = 0.02
+    dense_slot_consistency: float = 0.05
 
     long_gap_photo_weight: float = 0.08
     long_gap_consistency_weight: float = 0.03
@@ -56,6 +57,12 @@ class V5ModelConfig:
     overlap_prior_weight: float = 2.0
     use_long_gap_matching: bool = True
     predict_layer_order: bool = True
+    dense_match_hidden_dim: int = 128
+    dense_match_radius_l2: int = 6
+    dense_match_radius_l1: int = 4
+    dense_delta_scale_l2: float = 6.0
+    dense_delta_scale_l1: float = 4.0
+    dense_prior_mix: float = 0.65
     residual_hidden_dim: int = 96
     residual_blocks: int = 3
     residual_boundary_scale: float = 0.8
@@ -100,4 +107,3 @@ class V5Config:
             workspace=payload.get("workspace", "workspaces/v5_object_memory_sam"),
             seed=payload.get("seed", 1337),
         )
-

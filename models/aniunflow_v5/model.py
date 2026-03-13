@@ -16,6 +16,17 @@ from models.aniunflow_v4.sam_encoder import SAMEncoderWrapper
 from .config import V5Config
 
 
+def resize_flow(flow: torch.Tensor, size: Tuple[int, int]) -> torch.Tensor:
+    if flow.shape[-2:] == size:
+        return flow
+    h0, w0 = flow.shape[-2:]
+    h1, w1 = size
+    out = F.interpolate(flow, size=size, mode="bilinear", align_corners=True)
+    out[:, 0] *= float(w1) / max(float(w0), 1.0)
+    out[:, 1] *= float(h1) / max(float(h0), 1.0)
+    return out
+
+
 class ResidualFlowRefiner(nn.Module):
     def __init__(self, feat_dim: int, hidden_dim: int, num_blocks: int):
         super().__init__()
@@ -48,10 +59,75 @@ class ResidualFlowRefiner(nn.Module):
             boundary = F.interpolate(boundary, size=feat_a.shape[-2:], mode="nearest")
         if conf_map.shape[-2:] != feat_a.shape[-2:]:
             conf_map = F.interpolate(conf_map, size=feat_a.shape[-2:], mode="nearest")
-        if coarse_flow.shape[-2:] != feat_a.shape[-2:]:
-            coarse_flow = F.interpolate(coarse_flow, size=feat_a.shape[-2:], mode="bilinear", align_corners=True)
+        coarse_flow = resize_flow(coarse_flow, feat_a.shape[-2:])
         x = torch.cat([feat_a, feat_b, coarse_flow, boundary, conf_map], dim=1)
         return self.flow_head(self.body(x))
+
+
+class LocalCorrelationMatcher(nn.Module):
+    def __init__(self, feat_dim: int, hidden_dim: int, radius: int, delta_scale: float):
+        super().__init__()
+        self.radius = int(radius)
+        self.delta_scale = float(delta_scale)
+        corr_dim = (2 * self.radius + 1) ** 2
+        in_dim = feat_dim * 2 + 3 + corr_dim
+        self.stem = nn.Sequential(
+            nn.Conv2d(in_dim, hidden_dim, 3, padding=1),
+            nn.GroupNorm(8, hidden_dim),
+            nn.GELU(),
+            nn.Conv2d(hidden_dim, hidden_dim, 3, padding=1),
+            nn.GroupNorm(8, hidden_dim),
+            nn.GELU(),
+        )
+        self.delta_head = nn.Conv2d(hidden_dim, 2, 3, padding=1)
+        self.conf_head = nn.Conv2d(hidden_dim, 1, 3, padding=1)
+
+    @staticmethod
+    def _shift(feat: torch.Tensor, dx: int, dy: int) -> torch.Tensor:
+        shifted = torch.roll(feat, shifts=(dy, dx), dims=(-2, -1))
+        if dy > 0:
+            shifted[:, :, :dy, :] = 0
+        elif dy < 0:
+            shifted[:, :, dy:, :] = 0
+        if dx > 0:
+            shifted[:, :, :, :dx] = 0
+        elif dx < 0:
+            shifted[:, :, :, dx:] = 0
+        return shifted
+
+    def _correlate(self, feat_a: torch.Tensor, feat_b: torch.Tensor) -> torch.Tensor:
+        feat_a = F.normalize(feat_a, dim=1)
+        feat_b = F.normalize(feat_b, dim=1)
+        corrs = []
+        for dy in range(-self.radius, self.radius + 1):
+            for dx in range(-self.radius, self.radius + 1):
+                shifted = self._shift(feat_b, dx, dy)
+                corrs.append((feat_a * shifted).sum(dim=1, keepdim=True))
+        return torch.cat(corrs, dim=1)
+
+    def forward(
+        self,
+        feat_a: torch.Tensor,
+        feat_b: torch.Tensor,
+        prior_flow: Optional[torch.Tensor] = None,
+        conf_map: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        if prior_flow is None:
+            prior_flow = feat_a.new_zeros((feat_a.shape[0], 2, feat_a.shape[2], feat_a.shape[3]))
+        else:
+            prior_flow = resize_flow(prior_flow, feat_a.shape[-2:])
+        if conf_map is None:
+            conf_map = feat_a.new_zeros((feat_a.shape[0], 1, feat_a.shape[2], feat_a.shape[3]))
+        elif conf_map.shape[-2:] != feat_a.shape[-2:]:
+            conf_map = F.interpolate(conf_map, size=feat_a.shape[-2:], mode="nearest")
+
+        feat_b_warp = warp(feat_b, prior_flow)
+        corr = self._correlate(feat_a, feat_b_warp)
+        x = torch.cat([feat_a, feat_b_warp, prior_flow, conf_map, corr], dim=1)
+        hidden = self.stem(x)
+        delta = torch.tanh(self.delta_head(hidden)) * self.delta_scale
+        confidence = torch.sigmoid(self.conf_head(hidden))
+        return delta, confidence
 
 
 class AniFlowFormerTV5(nn.Module):
@@ -65,6 +141,8 @@ class AniFlowFormerTV5(nn.Module):
         self.config = config
         self.model_cfg = config.model
         self.sam_cfg = config.sam
+        self.backbone = str(self.model_cfg.backbone).lower()
+        self.use_dense_correlation = self.backbone.startswith("v5_1") or "dense" in self.backbone
 
         c = self.model_cfg.enc_channels
         d = self.model_cfg.slot_dim
@@ -111,6 +189,23 @@ class AniFlowFormerTV5(nn.Module):
             nn.GELU(),
             nn.Linear(self.model_cfg.slot_hidden_dim, 1),
         )
+
+        if self.use_dense_correlation:
+            self.l2_matcher = LocalCorrelationMatcher(
+                feat_dim=c * 2,
+                hidden_dim=self.model_cfg.dense_match_hidden_dim,
+                radius=self.model_cfg.dense_match_radius_l2,
+                delta_scale=self.model_cfg.dense_delta_scale_l2,
+            )
+            self.l1_matcher = LocalCorrelationMatcher(
+                feat_dim=c,
+                hidden_dim=self.model_cfg.dense_match_hidden_dim,
+                radius=self.model_cfg.dense_match_radius_l1,
+                delta_scale=self.model_cfg.dense_delta_scale_l1,
+            )
+        else:
+            self.l2_matcher = None
+            self.l1_matcher = None
 
         self.residual_refiner = ResidualFlowRefiner(
             feat_dim=c,
@@ -186,7 +281,7 @@ class AniFlowFormerTV5(nn.Module):
         feat_l1: torch.Tensor,
         feat_l2: torch.Tensor,
         labels: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         b = labels.shape[0]
         s = self.model_cfg.num_slots
         l1 = self.level1_proj(feat_l1)
@@ -209,7 +304,7 @@ class AniFlowFormerTV5(nn.Module):
             return tok_sum[:, 1:] / tok_cnt[:, 1:].clamp_min(1.0)
 
         slots = self.slot_fusion(torch.cat([_scatter_pool(l1, labels_l1), _scatter_pool(l2, labels_l2)], dim=-1))
-        return slots, labels_l1
+        return slots, labels_l1, labels_l2
 
     def _temporal_slots(
         self,
@@ -219,16 +314,18 @@ class AniFlowFormerTV5(nn.Module):
         t = len(feat_levels[0])
         slots_all = []
         labels_l1_all = []
+        labels_l2_all = []
         for ti in range(t):
-            slots_t, labels_l1_t = self._pool_slots(feat_levels[0][ti], feat_levels[1][ti], mask_labels[:, ti])
+            slots_t, labels_l1_t, labels_l2_t = self._pool_slots(feat_levels[0][ti], feat_levels[1][ti], mask_labels[:, ti])
             slots_all.append(slots_t)
             labels_l1_all.append(labels_l1_t)
+            labels_l2_all.append(labels_l2_t)
 
         slots = torch.stack(slots_all, dim=1)
         slots = slots + self.time_embed[:, :t] + self.slot_embed[:, :, : slots.shape[2]]
         slots_mem = self.temporal_memory(slots.view(slots.shape[0], -1, slots.shape[-1]))
         slots_mem = slots_mem.view_as(slots)
-        return slots_mem, slots_all, labels_l1_all
+        return slots_mem, labels_l1_all, labels_l2_all
 
     def _mask_iou(self, labels_a: torch.Tensor, labels_b: torch.Tensor) -> torch.Tensor:
         s = self.model_cfg.num_slots
@@ -286,23 +383,21 @@ class AniFlowFormerTV5(nn.Module):
         return flow
 
     def _compose_flow(self, flow_01: torch.Tensor, flow_12: torch.Tensor) -> torch.Tensor:
-        if flow_01.shape[-2:] != flow_12.shape[-2:]:
-            h0, w0 = flow_12.shape[-2:]
-            flow_12 = F.interpolate(flow_12, size=flow_01.shape[-2:], mode="bilinear", align_corners=True)
-            flow_12[:, 0] *= flow_01.shape[-1] / max(w0, 1)
-            flow_12[:, 1] *= flow_01.shape[-2] / max(h0, 1)
+        flow_12 = resize_flow(flow_12, flow_01.shape[-2:])
         return flow_01 + warp(flow_12, flow_01)
 
     def _pair_flow(
         self,
         feat_a_l1: torch.Tensor,
         feat_b_l1: torch.Tensor,
+        feat_a_l2: torch.Tensor,
+        feat_b_l2: torch.Tensor,
         slots_a: torch.Tensor,
         slots_b: torch.Tensor,
-        labels_a_full: torch.Tensor,
-        labels_b_full: torch.Tensor,
         labels_a_l1: torch.Tensor,
         labels_b_l1: torch.Tensor,
+        labels_a_l2: torch.Tensor,
+        labels_b_l2: torch.Tensor,
         boundary: Optional[torch.Tensor],
         enable_residual_branch: bool,
     ) -> Dict[str, torch.Tensor]:
@@ -311,23 +406,51 @@ class AniFlowFormerTV5(nn.Module):
         params = torch.tanh(self.motion_head(pair_feat)) * 0.25
         order = torch.tanh(self.order_head(pair_feat).squeeze(-1)) * 2.0
         occ = torch.sigmoid(self.occ_head(pair_feat).squeeze(-1))
-        coarse_flow = self._affine_grid_flow(labels_a_l1, params)
-        conf_map = self._slot_scalar_map(labels_a_l1, conf)
-        boundary_l1 = boundary if boundary is not None else torch.zeros_like(conf_map)
+
+        slot_flow_l2 = self._affine_grid_flow(labels_a_l2, params)
+        conf_map_l2 = self._slot_scalar_map(labels_a_l2, conf)
+        dense_prior_l2 = slot_flow_l2
+        corr_conf_l2 = conf_map_l2.new_zeros(conf_map_l2.shape)
+        if self.use_dense_correlation and self.l2_matcher is not None:
+            delta_l2, corr_conf_l2 = self.l2_matcher(feat_a_l2, feat_b_l2, slot_flow_l2, conf_map_l2)
+            dense_prior_l2 = slot_flow_l2 + delta_l2
+
+        slot_flow_l1 = self._affine_grid_flow(labels_a_l1, params)
+        dense_prior_up = resize_flow(dense_prior_l2, feat_a_l1.shape[-2:])
+        corr_conf_up = F.interpolate(corr_conf_l2, size=feat_a_l1.shape[-2:], mode="bilinear", align_corners=False)
+        conf_map_l1 = self._slot_scalar_map(labels_a_l1, conf)
+        if self.use_dense_correlation and self.l1_matcher is not None:
+            blended_prior = (
+                self.model_cfg.dense_prior_mix * dense_prior_up
+                + (1.0 - self.model_cfg.dense_prior_mix) * slot_flow_l1
+            )
+            corr_seed = 0.5 * (conf_map_l1 + corr_conf_up)
+            delta_l1, corr_conf_l1 = self.l1_matcher(feat_a_l1, feat_b_l1, blended_prior, corr_seed)
+            dense_prior = blended_prior + delta_l1
+            corr_conf = torch.maximum(corr_conf_up, corr_conf_l1)
+        else:
+            dense_prior = slot_flow_l1
+            corr_conf = conf_map_l1.new_zeros(conf_map_l1.shape)
+
+        boundary_l1 = boundary if boundary is not None else torch.zeros_like(conf_map_l1)
         if boundary_l1.shape[-2:] != feat_a_l1.shape[-2:]:
             boundary_l1 = F.interpolate(boundary_l1, size=feat_a_l1.shape[-2:], mode="nearest")
+        refiner_conf = 0.5 * (conf_map_l1 + corr_conf) if self.use_dense_correlation else conf_map_l1
         if enable_residual_branch:
-            residual = self.residual_refiner(feat_a_l1, feat_b_l1, coarse_flow, boundary_l1, conf_map)
+            residual = self.residual_refiner(feat_a_l1, feat_b_l1, dense_prior, boundary_l1, refiner_conf)
             residual = residual * (boundary_l1 * self.model_cfg.residual_boundary_scale + 0.25)
         else:
-            residual = torch.zeros_like(coarse_flow)
-        flow = coarse_flow + residual
+            residual = torch.zeros_like(dense_prior)
+        flow = dense_prior + residual
         return {
             "flow": flow,
-            "coarse_flow": coarse_flow,
+            "coarse_flow": dense_prior,
+            "slot_flow": slot_flow_l1,
+            "dense_prior_flow": dense_prior,
             "residual_flow": residual,
             "match_probs": probs,
             "match_confidence": conf,
+            "corr_confidence": corr_conf.squeeze(1),
             "segment_params": params,
             "layer_order": order,
             "occlusion_slots": occ,
@@ -348,13 +471,16 @@ class AniFlowFormerTV5(nn.Module):
         if mask_labels is None:
             raise ValueError("AniFlowFormerTV5 requires SAM masks for object-memory training.")
 
-        slots_mem, _, labels_l1_all = self._temporal_slots(feats_levels, mask_labels)
+        slots_mem, labels_l1_all, labels_l2_all = self._temporal_slots(feats_levels, mask_labels)
         outputs: Dict[str, List[torch.Tensor]] = {
             "flows": [],
             "coarse_flow": [],
+            "slot_flow": [],
+            "dense_prior_flow": [],
             "residual_flow": [],
             "match_probs": [],
             "match_confidence": [],
+            "corr_confidence": [],
             "segment_params": [],
             "layer_order": [],
             "occlusion_slots": [],
@@ -367,16 +493,30 @@ class AniFlowFormerTV5(nn.Module):
             pair_out = self._pair_flow(
                 feats_levels[0][k],
                 feats_levels[0][k + 1],
+                feats_levels[1][k],
+                feats_levels[1][k + 1],
                 slots_mem[:, k],
                 slots_mem[:, k + 1],
-                mask_labels[:, k],
-                mask_labels[:, k + 1],
                 labels_l1_all[k],
                 labels_l1_all[k + 1],
+                labels_l2_all[k],
+                labels_l2_all[k + 1],
                 boundary_k,
                 enable_residual_branch=enable_residual_branch,
             )
-            for key in ("flow", "coarse_flow", "residual_flow", "match_probs", "match_confidence", "segment_params", "layer_order", "occlusion_slots"):
+            for key in (
+                "flow",
+                "coarse_flow",
+                "slot_flow",
+                "dense_prior_flow",
+                "residual_flow",
+                "match_probs",
+                "match_confidence",
+                "corr_confidence",
+                "segment_params",
+                "layer_order",
+                "occlusion_slots",
+            ):
                 outputs[key if key != "flow" else "flows"].append(pair_out[key])
             outputs["layer_order_all"][k] = pair_out["layer_order"]
             if k == clip.shape[1] - 2:
@@ -428,11 +568,17 @@ class AniFlowFormerTV5(nn.Module):
             "match_probs_long": out_fw["match_probs_long"],
             "match_confidence_fw": out_fw["match_confidence"],
             "match_confidence_bw": [],
+            "corr_confidence_fw": out_fw["corr_confidence"],
+            "corr_confidence_bw": [],
             "layer_order_fw": out_fw["layer_order"],
             "layer_order_bw": [],
             "layer_order_all": out_fw["layer_order_all"],
             "occlusion_slots_fw": out_fw["occlusion_slots"],
             "occlusion_slots_bw": [],
+            "slot_flow_fw": out_fw["slot_flow"],
+            "slot_flow_bw": [],
+            "dense_prior_flow_fw": out_fw["dense_prior_flow"],
+            "dense_prior_flow_bw": [],
             "residual_flow_fw": out_fw["residual_flow"],
             "residual_flow_bw": [],
             "coarse_flow_fw": out_fw["coarse_flow"],
@@ -458,8 +604,11 @@ class AniFlowFormerTV5(nn.Module):
             outputs["segment_params_bw"] = [out_bw["segment_params"][n - 1 - i] for i in range(n)]
             outputs["match_probs_bw"] = [out_bw["match_probs"][n - 1 - i] for i in range(n)]
             outputs["match_confidence_bw"] = [out_bw["match_confidence"][n - 1 - i] for i in range(n)]
+            outputs["corr_confidence_bw"] = [out_bw["corr_confidence"][n - 1 - i] for i in range(n)]
             outputs["layer_order_bw"] = [out_bw["layer_order"][n - 1 - i] for i in range(n)]
             outputs["occlusion_slots_bw"] = [out_bw["occlusion_slots"][n - 1 - i] for i in range(n)]
+            outputs["slot_flow_bw"] = [out_bw["slot_flow"][n - 1 - i] for i in range(n)]
+            outputs["dense_prior_flow_bw"] = [out_bw["dense_prior_flow"][n - 1 - i] for i in range(n)]
             outputs["residual_flow_bw"] = [out_bw["residual_flow"][n - 1 - i] for i in range(n)]
             outputs["coarse_flow_bw"] = [out_bw["coarse_flow"][n - 1 - i] for i in range(n)]
 

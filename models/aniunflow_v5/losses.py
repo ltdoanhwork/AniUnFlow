@@ -10,6 +10,17 @@ from models.aniunflow.utils import warp
 from models.aniunflow_v4.losses import compute_boundary_map
 
 
+def resize_flow(flow: torch.Tensor, size: tuple[int, int]) -> torch.Tensor:
+    if flow.shape[-2:] == size:
+        return flow
+    h0, w0 = flow.shape[-2:]
+    h1, w1 = size
+    out = F.interpolate(flow, size=size, mode="bilinear", align_corners=True)
+    out[:, 0] *= float(w1) / max(float(w0), 1.0)
+    out[:, 1] *= float(h1) / max(float(h0), 1.0)
+    return out
+
+
 class V5ObjectMemoryLossBundle(nn.Module):
     def __init__(
         self,
@@ -19,6 +30,7 @@ class V5ObjectMemoryLossBundle(nn.Module):
         segment_cycle_weight: float = 0.04,
         layered_order_weight: float = 0.03,
         boundary_residual_weight: float = 0.02,
+        dense_slot_consistency_weight: float = 0.05,
     ):
         super().__init__()
         self.num_slots = int(num_slots)
@@ -27,6 +39,7 @@ class V5ObjectMemoryLossBundle(nn.Module):
         self.segment_cycle_weight = float(segment_cycle_weight)
         self.layered_order_weight = float(layered_order_weight)
         self.boundary_residual_weight = float(boundary_residual_weight)
+        self.dense_slot_consistency_weight = float(dense_slot_consistency_weight)
 
     @classmethod
     def from_config(cls, cfg: Dict) -> "V5ObjectMemoryLossBundle":
@@ -39,6 +52,7 @@ class V5ObjectMemoryLossBundle(nn.Module):
             segment_cycle_weight=float(loss_cfg.get("segment_cycle", 0.04)),
             layered_order_weight=float(loss_cfg.get("layered_order", 0.03)),
             boundary_residual_weight=float(loss_cfg.get("boundary_residual", 0.02)),
+            dense_slot_consistency_weight=float(loss_cfg.get("dense_slot_consistency", 0.05)),
         )
 
     def _normalize_labels(self, sam_masks: Optional[torch.Tensor]) -> Optional[torch.Tensor]:
@@ -172,6 +186,33 @@ class V5ObjectMemoryLossBundle(nn.Module):
             return labels.new_tensor(0.0, dtype=torch.float32)
         return sum(losses) / len(losses)
 
+    def _dense_slot_consistency(
+        self,
+        labels: torch.Tensor,
+        slot_flows: List[torch.Tensor],
+        dense_priors: List[torch.Tensor],
+        match_conf: List[torch.Tensor],
+    ) -> torch.Tensor:
+        losses = []
+        limit = min(len(slot_flows), len(dense_priors), len(match_conf), labels.shape[1])
+        for k in range(limit):
+            slot_flow = slot_flows[k]
+            dense_prior = dense_priors[k]
+            if slot_flow.shape[-2:] != dense_prior.shape[-2:]:
+                slot_flow = resize_flow(slot_flow, dense_prior.shape[-2:])
+            lbl = labels[:, k]
+            h, w = dense_prior.shape[-2:]
+            if lbl.shape[-2:] != (h, w):
+                lbl = F.interpolate(lbl.unsqueeze(1).float(), size=(h, w), mode="nearest").squeeze(1).long()
+            boundary = compute_boundary_map(lbl).float()
+            interior = 1.0 - boundary
+            conf_map = self._slot_scalar_map(lbl, match_conf[k].clamp(0.0, 1.0))
+            diff = torch.norm(dense_prior - slot_flow, dim=1, keepdim=True)
+            losses.append((diff * interior * conf_map).mean())
+        if not losses:
+            return labels.new_tensor(0.0, dtype=torch.float32)
+        return sum(losses) / len(losses)
+
     def forward(
         self,
         sam_masks: Optional[torch.Tensor],
@@ -189,6 +230,7 @@ class V5ObjectMemoryLossBundle(nn.Module):
                 "segment_cycle": zero,
                 "layered_order": zero,
                 "boundary_residual": zero,
+                "dense_slot_consistency": zero,
                 "total": zero,
             }
 
@@ -202,12 +244,15 @@ class V5ObjectMemoryLossBundle(nn.Module):
         long_match = model_out.get("match_probs_long", [])
         layer_orders = model_out.get("layer_order_all", [])
         occlusion_slots = model_out.get("occlusion_slots_fw", [])
+        slot_flow_fw = model_out.get("slot_flow_fw", [])
+        dense_prior_fw = model_out.get("dense_prior_flow_fw", [])
 
         segment_warp = self._segment_warp_consistency(labels, flows_fw, match_probs, match_conf)
         piecewise_residual = self._piecewise_residual(labels, residual_fw, match_conf) if enable_residual_terms else torch.tensor(0.0, device=device)
         segment_cycle = self._segment_cycle(match_probs, long_match) if enable_segment_cycle else torch.tensor(0.0, device=device)
         layered_order = self._layered_order_consistency(match_probs, match_conf, layer_orders, occlusion_slots) if enable_layered_order else torch.tensor(0.0, device=device)
         boundary_residual = self._boundary_residual_specialization(labels, residual_fw) if enable_residual_terms else torch.tensor(0.0, device=device)
+        dense_slot_consistency = self._dense_slot_consistency(labels, slot_flow_fw, dense_prior_fw, match_conf) if dense_prior_fw else torch.tensor(0.0, device=device)
 
         total = (
             self.segment_warp_weight * segment_warp
@@ -215,6 +260,7 @@ class V5ObjectMemoryLossBundle(nn.Module):
             + self.segment_cycle_weight * segment_cycle
             + self.layered_order_weight * layered_order
             + self.boundary_residual_weight * boundary_residual
+            + self.dense_slot_consistency_weight * dense_slot_consistency
         )
         return {
             "segment_warp": segment_warp,
@@ -222,6 +268,6 @@ class V5ObjectMemoryLossBundle(nn.Module):
             "segment_cycle": segment_cycle,
             "layered_order": layered_order,
             "boundary_residual": boundary_residual,
+            "dense_slot_consistency": dense_slot_consistency,
             "total": total,
         }
-

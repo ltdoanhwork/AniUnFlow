@@ -97,6 +97,10 @@ def path_indicates_animerun(path: Path) -> bool:
 
 def infer_family(run_dir: Path, cfg: Dict[str, Any]) -> str:
     path_lower = relpath(run_dir).lower()
+    model_cfg = cfg.get("model", {}) if isinstance(cfg, dict) else {}
+    backbone = str(model_cfg.get("backbone", "")).lower() if isinstance(model_cfg, dict) else ""
+    if "v5_1_object_memory" in path_lower or "v5_1_object_memory" in backbone:
+        return "AniFlowFormerTV5.1"
     if "v5_object_memory" in path_lower:
         return "AniFlowFormerTV5"
     if "upflow" in path_lower:
@@ -115,7 +119,6 @@ def infer_family(run_dir: Path, cfg: Dict[str, Any]) -> str:
         return "AniFlowFormerTV3"
     if "global_matching_v1" in path_lower:
         return "AniFlowFormerT"
-    model_cfg = cfg.get("model", {})
     if isinstance(model_cfg, dict):
         if model_cfg.get("backbone"):
             return str(model_cfg["backbone"])
@@ -130,6 +133,8 @@ def infer_research_branch(run_dir: Path, cfg: Dict[str, Any]) -> str:
     backbone = str(model_cfg.get("backbone", "")).lower() if isinstance(model_cfg, dict) else ""
     model_name = str(model_cfg.get("name", "")).lower() if isinstance(model_cfg, dict) else ""
 
+    if "v5_1_object_memory" in path_lower or "v5_1_object_memory" in backbone:
+        return "V5.1 Object Memory Dense"
     if "v5_object_memory" in path_lower or "v5_object_memory" in backbone or "aniflowformertv5" in model_name:
         return "V5 Object Memory"
     if "v4_6" in path_lower or "v4_5_hybrid_sam" in backbone:
