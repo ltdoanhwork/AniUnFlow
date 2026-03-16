@@ -31,6 +31,7 @@ class V5LossConfig:
     occ_aware_start_epoch: int = 1
 
     segment_warp: float = 0.12
+    slot_photo: float = 0.0
     piecewise_residual: float = 0.03
     segment_cycle: float = 0.04
     layered_order: float = 0.03
@@ -63,9 +64,14 @@ class V5ModelConfig:
     dense_delta_scale_l2: float = 6.0
     dense_delta_scale_l1: float = 4.0
     dense_prior_mix: float = 0.65
+    dense_update_scale_l2: float = 0.75
+    dense_update_scale_l1: float = 0.5
+    dense_confidence_floor: float = 0.1
     residual_hidden_dim: int = 96
     residual_blocks: int = 3
     residual_boundary_scale: float = 0.8
+    residual_base_scale: float = 0.2
+    residual_confidence_floor: float = 0.35
 
 
 @dataclass

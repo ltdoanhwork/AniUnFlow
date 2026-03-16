@@ -386,6 +386,14 @@ class AniFlowFormerTV5(nn.Module):
         flow_12 = resize_flow(flow_12, flow_01.shape[-2:])
         return flow_01 + warp(flow_12, flow_01)
 
+    def _confidence_gate(self, support_conf: torch.Tensor, pred_conf: torch.Tensor) -> torch.Tensor:
+        support_conf = support_conf.clamp(0.0, 1.0)
+        pred_conf = pred_conf.clamp(0.0, 1.0)
+        # Dense refinement should not override the object prior when slot matching is weak.
+        joint = pred_conf * support_conf
+        floor = float(self.model_cfg.dense_confidence_floor)
+        return floor + (1.0 - floor) * joint
+
     def _pair_flow(
         self,
         feat_a_l1: torch.Tensor,
@@ -413,7 +421,8 @@ class AniFlowFormerTV5(nn.Module):
         corr_conf_l2 = conf_map_l2.new_zeros(conf_map_l2.shape)
         if self.use_dense_correlation and self.l2_matcher is not None:
             delta_l2, corr_conf_l2 = self.l2_matcher(feat_a_l2, feat_b_l2, slot_flow_l2, conf_map_l2)
-            dense_prior_l2 = slot_flow_l2 + delta_l2
+            gate_l2 = self._confidence_gate(conf_map_l2, corr_conf_l2)
+            dense_prior_l2 = slot_flow_l2 + self.model_cfg.dense_update_scale_l2 * delta_l2 * gate_l2
 
         slot_flow_l1 = self._affine_grid_flow(labels_a_l1, params)
         dense_prior_up = resize_flow(dense_prior_l2, feat_a_l1.shape[-2:])
@@ -426,7 +435,8 @@ class AniFlowFormerTV5(nn.Module):
             )
             corr_seed = 0.5 * (conf_map_l1 + corr_conf_up)
             delta_l1, corr_conf_l1 = self.l1_matcher(feat_a_l1, feat_b_l1, blended_prior, corr_seed)
-            dense_prior = blended_prior + delta_l1
+            gate_l1 = self._confidence_gate(corr_seed, corr_conf_l1)
+            dense_prior = blended_prior + self.model_cfg.dense_update_scale_l1 * delta_l1 * gate_l1
             corr_conf = torch.maximum(corr_conf_up, corr_conf_l1)
         else:
             dense_prior = slot_flow_l1
@@ -438,7 +448,12 @@ class AniFlowFormerTV5(nn.Module):
         refiner_conf = 0.5 * (conf_map_l1 + corr_conf) if self.use_dense_correlation else conf_map_l1
         if enable_residual_branch:
             residual = self.residual_refiner(feat_a_l1, feat_b_l1, dense_prior, boundary_l1, refiner_conf)
-            residual = residual * (boundary_l1 * self.model_cfg.residual_boundary_scale + 0.25)
+            residual_gate = boundary_l1 * self.model_cfg.residual_boundary_scale + self.model_cfg.residual_base_scale
+            residual_gate = residual_gate * (
+                self.model_cfg.residual_confidence_floor
+                + (1.0 - self.model_cfg.residual_confidence_floor) * refiner_conf.clamp(0.0, 1.0)
+            )
+            residual = residual * residual_gate
         else:
             residual = torch.zeros_like(dense_prior)
         flow = dense_prior + residual

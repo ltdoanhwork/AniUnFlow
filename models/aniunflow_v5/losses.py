@@ -159,7 +159,14 @@ class V5ObjectMemoryLossBundle(nn.Module):
             matched_order = torch.matmul(match_probs[k], order_b.unsqueeze(-1)).squeeze(-1)
             target = torch.sigmoid(order_a - matched_order)
             conf = match_conf[k].clamp(0.0, 1.0)
-            losses.append(F.binary_cross_entropy(occ, target, weight=conf, reduction="sum") / (conf.sum() + 1e-6))
+            with torch.amp.autocast(device_type="cuda", enabled=False):
+                bce = F.binary_cross_entropy(
+                    occ.float().clamp(1e-4, 1.0 - 1e-4),
+                    target.float(),
+                    reduction="none",
+                )
+                loss = (bce * conf.float()).sum() / (conf.float().sum() + 1e-6)
+            losses.append(loss)
         if not losses:
             device = layer_orders[0].device if layer_orders else "cpu"
             return torch.tensor(0.0, device=device)

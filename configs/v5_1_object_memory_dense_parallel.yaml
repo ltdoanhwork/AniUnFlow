@@ -17,7 +17,7 @@ data:
   val_load_sam_masks: true
   val_sam_mask_dir: data/AnimeRun_v2/SAM_Masks_v2
   val_sam_mask_cache_size: 1024
-  batch_size: 4
+  batch_size: 8
   num_workers: 8
   persistent_workers: true
   prefetch_factor: 6
@@ -37,7 +37,7 @@ model:
   temporal_memory_heads: 4
   temporal_memory_dropout: 0.0
   num_slots: 32
-  overlap_prior_weight: 2.2
+  overlap_prior_weight: 3.0
   use_long_gap_matching: true
   predict_layer_order: true
   dense_match_hidden_dim: 160
@@ -45,10 +45,15 @@ model:
   dense_match_radius_l1: 4
   dense_delta_scale_l2: 8.0
   dense_delta_scale_l1: 4.5
-  dense_prior_mix: 0.72
+  dense_prior_mix: 0.40
+  dense_update_scale_l2: 0.45
+  dense_update_scale_l1: 0.20
+  dense_confidence_floor: 0.02
   residual_hidden_dim: 128
   residual_blocks: 4
   residual_boundary_scale: 0.75
+  residual_base_scale: 0.18
+  residual_confidence_floor: 0.35
 
 sam:
   enabled: true
@@ -72,19 +77,20 @@ loss:
   warmup_steps: 1200
   disable_occ_during_warmup: true
   occ_aware_start_epoch: 5
-  segment_warp: 0.14
-  piecewise_residual: 0.025
+  segment_warp: 0.25
+  slot_photo: 0.20
+  piecewise_residual: 0.05
   segment_cycle: 0.05
-  layered_order: 0.03
+  layered_order: 0.01
   boundary_residual: 0.018
-  dense_slot_consistency: 0.05
-  long_gap_photo_weight: 0.10
-  long_gap_consistency_weight: 0.04
-  long_gap_start_epoch: 8
+  dense_slot_consistency: 0.20
+  long_gap_photo_weight: 0.06
+  long_gap_consistency_weight: 0.02
+  long_gap_start_epoch: 14
   long_gap_ramp_epochs: 6
 
 optim:
-  lr: 4.0e-5
+  lr: 3.5e-5
   weight_decay: 1.0e-4
   epochs: 60
   warmup_epochs: 4
@@ -93,8 +99,8 @@ optim:
   freeze_encoder_epoch: 0
   scheduler:
     type: onecycle
-    max_lr: 7.0e-5
-    pct_start: 0.10
+    max_lr: 6.0e-5
+    pct_start: 0.12
     div_factor: 10.0
     final_div_factor: 1000.0
     anneal_strategy: cos
@@ -122,7 +128,7 @@ runtime:
   nan_guard_flow_clip: 500.0
   schedule:
     - start_epoch: 1
-      end_epoch: 4
+      end_epoch: 6
       stride_min: 1
       stride_max: 1
       enable_occ_aware: false
@@ -130,17 +136,26 @@ runtime:
       enable_residual_branch: false
       enable_segment_cycle: false
       enable_layered_order: false
-    - start_epoch: 5
+    - start_epoch: 7
       end_epoch: 12
+      stride_min: 1
+      stride_max: 1
+      enable_occ_aware: true
+      enable_long_gap: false
+      enable_residual_branch: true
+      enable_segment_cycle: false
+      enable_layered_order: false
+    - start_epoch: 13
+      end_epoch: 24
       stride_min: 1
       stride_max: 2
       enable_occ_aware: true
-      enable_long_gap: true
+      enable_long_gap: false
       enable_residual_branch: true
       enable_segment_cycle: false
-      enable_layered_order: true
-    - start_epoch: 13
-      end_epoch: 32
+      enable_layered_order: false
+    - start_epoch: 25
+      end_epoch: 40
       stride_min: 1
       stride_max: 2
       enable_occ_aware: true
@@ -148,7 +163,7 @@ runtime:
       enable_residual_branch: true
       enable_segment_cycle: true
       enable_layered_order: true
-    - start_epoch: 33
+    - start_epoch: 41
       end_epoch: 60
       stride_min: 1
       stride_max: 3

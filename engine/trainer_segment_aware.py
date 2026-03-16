@@ -1087,100 +1087,6 @@ class SegmentAwareTrainer:
                 # Use pre-loaded masks if available (faster)
                 if "sam_masks" in batch:
                     segment_masks = batch["sam_masks"]
-                elif isinstance(self.model, AniFlowFormerTV5):
-                    enable_residual_branch = self._runtime_overrides["enable_residual_branch"] is not False
-                    out_fw = self.model(
-                        clip,
-                        sam_masks=segment_masks,
-                        sam_features=sam_features,
-                        return_losses=True,
-                        enable_residual_branch=enable_residual_branch,
-                    )
-                    flows_fw = out_fw["flows_fw"]
-                    flows_bw = out_fw["flows_bw"]
-                    if self.nan_guard_enabled:
-                        flows_fw, bad_fw = self._sanitize_tensor_list(flows_fw)
-                        flows_bw, bad_bw = self._sanitize_tensor_list(flows_bw)
-                        out_fw["flows_fw"] = flows_fw
-                        out_fw["flows_bw"] = flows_bw
-                        if out_fw.get("flows_long"):
-                            out_fw["flows_long"], bad_long = self._sanitize_tensor_list(out_fw["flows_long"])
-                        else:
-                            bad_long = 0
-                        if out_fw.get("residual_flow_fw"):
-                            out_fw["residual_flow_fw"], bad_res = self._sanitize_tensor_list(out_fw["residual_flow_fw"])
-                        else:
-                            bad_res = 0
-                        bad_total = bad_fw + bad_bw + bad_long + bad_res
-                        if bad_total > 0 and self._nan_warn_count < 20:
-                            print(
-                                f"[NaNGuard] Sanitized {bad_total} non-finite values "
-                                f"at epoch={self.current_epoch} step={self.global_step}"
-                            )
-                            self._nan_warn_count += 1
-
-                    use_occ_mask = not (
-                        self.disable_occ_during_warmup and self.global_step < self.warmup_steps
-                    )
-                    use_occ_mask = use_occ_mask and (self.current_epoch >= self.occ_aware_start_epoch)
-                    if self._runtime_overrides["enable_occ_aware"] is False:
-                        use_occ_mask = False
-                    if self._runtime_overrides["enable_occ_aware"] is True:
-                        use_occ_mask = not (
-                            self.disable_occ_during_warmup and self.global_step < self.warmup_steps
-                        )
-
-                    long_gap_photo_w, long_gap_cons_w = self._current_long_gap_weights()
-                    if self._runtime_overrides["enable_long_gap"] is False:
-                        long_gap_photo_w, long_gap_cons_w = 0.0, 0.0
-                    loss_dict = self.base_loss.unsup_bidirectional(
-                        clip,
-                        flows_fw,
-                        flows_bw,
-                        use_occ_mask=use_occ_mask,
-                        long_gap_photo_weight=long_gap_photo_w,
-                        long_gap_consistency_weight=long_gap_cons_w,
-                    )
-                    loss_dict["long_gap_photo_w"] = long_gap_photo_w
-                    loss_dict["long_gap_cons_w"] = long_gap_cons_w
-                    total_loss = loss_dict["total"]
-
-                    if self.v5_loss_bundle is not None and segment_masks is not None:
-                        v5_losses = self.v5_loss_bundle(
-                            sam_masks=segment_masks,
-                            model_out=out_fw,
-                            enable_segment_cycle=self._runtime_overrides["enable_segment_cycle"] is not False,
-                            enable_layered_order=self._runtime_overrides["enable_layered_order"] is not False,
-                            enable_residual_terms=enable_residual_branch,
-                        )
-                        total_loss = total_loss + v5_losses["total"]
-                        loss_dict["v5_segment_warp"] = float(v5_losses["segment_warp"].detach())
-                        loss_dict["v5_piecewise_residual"] = float(v5_losses["piecewise_residual"].detach())
-                        loss_dict["v5_segment_cycle"] = float(v5_losses["segment_cycle"].detach())
-                        loss_dict["v5_layered_order"] = float(v5_losses["layered_order"].detach())
-                        loss_dict["v5_boundary_residual"] = float(v5_losses["boundary_residual"].detach())
-                        loss_dict["v5_dense_slot_consistency"] = float(v5_losses["dense_slot_consistency"].detach())
-                        loss_dict["v5_total"] = float(v5_losses["total"].detach())
-
-                    if (
-                        self.teacher_model is not None
-                        and self.teacher_distill_weight > 0
-                        and self.global_step >= self.teacher_start_step
-                        and (self.global_step % self.teacher_every_n_steps == 0)
-                    ):
-                        with torch.no_grad():
-                            teacher_out = self.teacher_model(
-                                clip,
-                                sam_masks=segment_masks,
-                                sam_features=sam_features,
-                                return_losses=False,
-                                enable_residual_branch=enable_residual_branch,
-                            )
-                        distill_loss = self._compute_distill_loss(out_fw, teacher_out)
-                        if distill_loss is not None:
-                            total_loss = total_loss + self.teacher_distill_weight * distill_loss
-                            loss_dict["distill"] = float(distill_loss.detach())
-
                 else:
                     # Fallback to online generation (slower)
                     with torch.no_grad():
@@ -1342,6 +1248,122 @@ class SegmentAwareTrainer:
                             total_loss = total_loss + self.teacher_distill_weight * distill_loss
                             loss_dict["distill"] = float(distill_loss.detach())
 
+                elif isinstance(self.model, AniFlowFormerTV5):
+                    enable_residual_branch = self._runtime_overrides["enable_residual_branch"] is not False
+                    out_fw = self.model(
+                        clip,
+                        sam_masks=segment_masks,
+                        sam_features=sam_features,
+                        return_losses=True,
+                        enable_residual_branch=enable_residual_branch,
+                    )
+                    flows_fw = out_fw["flows_fw"]
+                    flows_bw = out_fw["flows_bw"]
+                    if self.nan_guard_enabled:
+                        flows_fw, bad_fw = self._sanitize_tensor_list(flows_fw)
+                        flows_bw, bad_bw = self._sanitize_tensor_list(flows_bw)
+                        out_fw["flows_fw"] = flows_fw
+                        out_fw["flows_bw"] = flows_bw
+                        if out_fw.get("flows_long"):
+                            out_fw["flows_long"], bad_long = self._sanitize_tensor_list(out_fw["flows_long"])
+                        else:
+                            bad_long = 0
+                        if out_fw.get("residual_flow_fw"):
+                            out_fw["residual_flow_fw"], bad_res = self._sanitize_tensor_list(out_fw["residual_flow_fw"])
+                        else:
+                            bad_res = 0
+                        if out_fw.get("dense_prior_flow_fw"):
+                            out_fw["dense_prior_flow_fw"], bad_dense = self._sanitize_tensor_list(out_fw["dense_prior_flow_fw"])
+                        else:
+                            bad_dense = 0
+                        bad_total = bad_fw + bad_bw + bad_long + bad_res + bad_dense
+                        if bad_total > 0 and self._nan_warn_count < 20:
+                            print(
+                                f"[NaNGuard] Sanitized {bad_total} non-finite values "
+                                f"at epoch={self.current_epoch} step={self.global_step}"
+                            )
+                            self._nan_warn_count += 1
+
+                    use_occ_mask = not (
+                        self.disable_occ_during_warmup and self.global_step < self.warmup_steps
+                    )
+                    use_occ_mask = use_occ_mask and (self.current_epoch >= self.occ_aware_start_epoch)
+                    if self._runtime_overrides["enable_occ_aware"] is False:
+                        use_occ_mask = False
+                    if self._runtime_overrides["enable_occ_aware"] is True:
+                        use_occ_mask = not (
+                            self.disable_occ_during_warmup and self.global_step < self.warmup_steps
+                        )
+
+                    long_gap_photo_w, long_gap_cons_w = self._current_long_gap_weights()
+                    if self._runtime_overrides["enable_long_gap"] is False:
+                        long_gap_photo_w, long_gap_cons_w = 0.0, 0.0
+                    loss_dict = self.base_loss.unsup_bidirectional(
+                        clip,
+                        flows_fw,
+                        flows_bw,
+                        use_occ_mask=use_occ_mask,
+                        long_gap_photo_weight=long_gap_photo_w,
+                        long_gap_consistency_weight=long_gap_cons_w,
+                    )
+                    loss_dict["long_gap_photo_w"] = long_gap_photo_w
+                    loss_dict["long_gap_cons_w"] = long_gap_cons_w
+                    total_loss = loss_dict["total"]
+
+                    if self.v5_loss_bundle is not None and segment_masks is not None:
+                        v5_losses = self.v5_loss_bundle(
+                            sam_masks=segment_masks,
+                            model_out=out_fw,
+                            enable_segment_cycle=self._runtime_overrides["enable_segment_cycle"] is not False,
+                            enable_layered_order=self._runtime_overrides["enable_layered_order"] is not False,
+                            enable_residual_terms=enable_residual_branch,
+                        )
+                        total_loss = total_loss + v5_losses["total"]
+                        loss_dict["v5_segment_warp"] = float(v5_losses["segment_warp"].detach())
+                        loss_dict["v5_piecewise_residual"] = float(v5_losses["piecewise_residual"].detach())
+                        loss_dict["v5_segment_cycle"] = float(v5_losses["segment_cycle"].detach())
+                        loss_dict["v5_layered_order"] = float(v5_losses["layered_order"].detach())
+                        loss_dict["v5_boundary_residual"] = float(v5_losses["boundary_residual"].detach())
+                        loss_dict["v5_dense_slot_consistency"] = float(v5_losses["dense_slot_consistency"].detach())
+                        loss_dict["v5_total"] = float(v5_losses["total"].detach())
+
+                    slot_photo_w = float(self.cfg.get("loss", {}).get("slot_photo", 0.0))
+                    if (
+                        slot_photo_w > 0.0
+                        and out_fw.get("slot_flow_fw")
+                        and out_fw.get("slot_flow_bw")
+                    ):
+                        slot_loss = self.base_loss.unsup_bidirectional(
+                            clip,
+                            out_fw["slot_flow_fw"],
+                            out_fw["slot_flow_bw"],
+                            use_occ_mask=use_occ_mask,
+                            long_gap_photo_weight=0.0,
+                            long_gap_consistency_weight=0.0,
+                        )
+                        total_loss = total_loss + slot_photo_w * slot_loss["total"]
+                        loss_dict["v5_slot_photo"] = float(slot_loss["total"].detach())
+                        loss_dict["v5_slot_photo_w"] = float(slot_photo_w)
+
+                    if (
+                        self.teacher_model is not None
+                        and self.teacher_distill_weight > 0
+                        and self.global_step >= self.teacher_start_step
+                        and (self.global_step % self.teacher_every_n_steps == 0)
+                    ):
+                        with torch.no_grad():
+                            teacher_out = self.teacher_model(
+                                clip,
+                                sam_masks=segment_masks,
+                                sam_features=sam_features,
+                                return_losses=False,
+                                enable_residual_branch=enable_residual_branch,
+                            )
+                        distill_loss = self._compute_distill_loss(out_fw, teacher_out)
+                        if distill_loss is not None:
+                            total_loss = total_loss + self.teacher_distill_weight * distill_loss
+                            loss_dict["distill"] = float(distill_loss.detach())
+
                 else:
                     # V1/V3 Model: Separate forward and loss
                     out_fw = self.model(clip, sam_masks=segment_masks)
@@ -1456,7 +1478,7 @@ class SegmentAwareTrainer:
             
             # Logging
             if self.writer and self.global_step % self.log_every == 0:
-                self._log_training_step(clip, flows_fw, loss_dict, segment_masks)
+                self._log_training_step(clip, flows_fw, loss_dict, segment_masks, model_out=out_fw)
         
         return accum
     
@@ -1466,6 +1488,7 @@ class SegmentAwareTrainer:
         flows: List[torch.Tensor],
         loss_dict: Dict[str, Any],
         segment_masks: Optional[torch.Tensor] = None,
+        model_out: Optional[Dict[str, Any]] = None,
     ):
         """Log training metrics and visualizations."""
         step = self.global_step
@@ -1487,6 +1510,25 @@ class SegmentAwareTrainer:
             self.writer.add_scalar("train_flow/mag_mean", mag.mean().item(), step)
             self.writer.add_scalar("train_flow/mag_std", mag.std().item(), step)
             self.writer.add_scalar("train_flow/mag_max", mag.max().item(), step)
+            if model_out is not None:
+                if model_out.get("slot_flow_fw"):
+                    slot = model_out["slot_flow_fw"][0].detach()
+                    slot_mag = (slot[:, 0] ** 2 + slot[:, 1] ** 2).sqrt()
+                    self.writer.add_scalar("train_v5/slot_mag_mean", slot_mag.mean().item(), step)
+                if model_out.get("dense_prior_flow_fw"):
+                    dense_prior = model_out["dense_prior_flow_fw"][0].detach()
+                    dense_prior_mag = (dense_prior[:, 0] ** 2 + dense_prior[:, 1] ** 2).sqrt()
+                    self.writer.add_scalar("train_v5/dense_prior_mag_mean", dense_prior_mag.mean().item(), step)
+                if model_out.get("residual_flow_fw"):
+                    residual = model_out["residual_flow_fw"][0].detach()
+                    residual_mag = (residual[:, 0] ** 2 + residual[:, 1] ** 2).sqrt()
+                    self.writer.add_scalar("train_v5/residual_mag_mean", residual_mag.mean().item(), step)
+                if model_out.get("corr_confidence_fw"):
+                    corr_conf = model_out["corr_confidence_fw"][0].detach()
+                    self.writer.add_scalar("train_v5/corr_conf_mean", corr_conf.mean().item(), step)
+                if model_out.get("match_confidence_fw"):
+                    match_conf = model_out["match_confidence_fw"][0].detach()
+                    self.writer.add_scalar("train_v5/match_conf_mean", match_conf.mean().item(), step)
         
         # Segment statistics
         if self.log_segment_stats and segment_masks is not None:
