@@ -1,0 +1,63 @@
+\section{Ablation Studies}
+\label{sec:ablation}
+
+\subsection{Ablation Setup}
+
+The original ablation plan for V5.1 was broad: in principle, we would like to isolate temporal object memory, layered ordering, dense recovery, dense-slot consistency, and the final boundary-aware residual stage one by one. At the current stage of the project, however, only a subset of these comparisons has been completed and stored with reproducible metrics. Rather than presenting speculative or placeholder numbers, we therefore focus this section on the component-level comparisons that are already supported by actual runs and by the qualitative diagnostics in Figure~\ref{fig:ablation_component_diagnostics}.
+
+In particular, the available evidence covers three practically important checkpoints in the development of the model family. First, we compare against the earlier V5 object-memory baseline, which uses object-centric motion reasoning but no explicit dense recovery branch. Second, we compare against the stabilized pre-fine-tuning V5.1 run, which already includes dense recovery together with the later stabilization changes. Third, we report the final low-learning-rate fine-tuned V5.1 checkpoint used in the main evaluation. This does not yet constitute a full module-by-module ablation grid, but it is sufficient to answer the most important question for the current paper draft: did dense recovery and the stabilization recipe materially improve the object-centric baseline?
+
+\subsection{Measured Component Comparison}
+
+\begin{table}[t]
+\centering
+\caption{Measured component-level comparison using runs that are fully available in the repository. The table compares the earlier object-centric baseline, the stabilized V5.1 checkpoint before the final fine-tuning pass, and the final fine-tuned model.}
+\label{tab:ablation_results}
+\begin{tabular}{lcccc}
+\hline
+Variant & EPE $\downarrow$ & 1px $\uparrow$ & 3px $\uparrow$ & 5px $\uparrow$ \\
+\hline
+V5 object-memory baseline & 10.028 & 0.155 & 0.414 & 0.534 \\
+V5.1 stabilized pre-fine-tuning & 9.261 & 0.225 & 0.461 & 0.576 \\
+\textbf{V5.1 final fine-tuned model} & \textbf{9.219} & \textbf{0.230} & \textbf{0.466} & \textbf{0.584} \\
+\hline
+\end{tabular}
+\end{table}
+
+Table~\ref{tab:ablation_results} already reveals the main trend clearly. Moving from the earlier V5 branch to the stabilized V5.1 architecture reduces EPE by roughly $0.77$ pixels before the final fine-tuning pass and by about $0.81$ pixels after fine-tuning. The threshold accuracies improve at the same time, especially the strict $1$px metric. This is exactly the pattern we would expect if dense recovery is fixing local motion detail that the purely object-centric baseline cannot explain.
+
+\subsection{What the Available Ablation Evidence Actually Shows}
+
+The first conclusion is that the slot-affine prior by itself is too rigid. The V5 baseline is structurally coherent, but it underfits the local deformation that appears inside moving anime objects. This limitation is visible both in the quantitative gap to V5.1 and in the qualitative component figure, where the slot prior is smoother and less detailed than the final prediction.
+
+The second conclusion is that dense refinement is necessary but not automatically stable. During development, the dense branch initially tended to overpower the object prior, especially when slot matching confidence was weak. The later V5.1 revisions therefore introduced confidence-gated dense updates and an auxiliary slot-photo objective that keeps the object prior from collapsing. The difference between the earlier V5 branch and the stabilized V5.1 checkpoints should be interpreted in this light: the gain is not simply ``more capacity,'' but a better balance between object-structured motion and dense correction.
+
+The third conclusion is that the final fine-tuning stage still matters. The gap between the stabilized pre-fine-tuning checkpoint and the final fine-tuned model is much smaller than the gap between V5 and V5.1, but it is consistent across all four headline metrics. This suggests that once the architecture is stable, a conservative low-learning-rate optimization phase helps preserve the object prior while improving local alignment.
+
+\subsection{Pending Fine-Grained Ablations}
+
+The ablations that are still missing should be described honestly rather than filled with placeholders. In particular, we do not yet have a complete measured grid for removing temporal memory, removing layered ordering, removing dense-slot consistency, or removing the boundary-aware residual stage one at a time from the final stabilized branch. These experiments remain worthwhile, but they are still pending. For the current draft, we therefore restrict the quantitative ablation claims to the measured comparisons above and use the qualitative component analysis to explain the intended role of the missing modules.
+
+\subsection{Qualitative Component Analysis}
+
+\begin{figure}[t]
+\centering
+\begin{minipage}[t]{0.49\linewidth}
+    \centering
+    \includegraphics[width=\linewidth]{demo/v5_1_object_memory_dense_parallel_v4_paper/compact/ablation_0318.png}
+\end{minipage}\hfill
+\begin{minipage}[t]{0.49\linewidth}
+    \centering
+    \includegraphics[width=\linewidth]{demo/v5_1_object_memory_dense_parallel_v4_paper/compact/ablation_0277.png}
+\end{minipage}
+\caption{Component-level diagnostics of the stabilized V5.1 model on two AnimeRun clips. Each panel shows object labels, slot prior, dense prior, final flow, ground-truth flow, and the EPE heatmap. The slot prior is structurally coherent but too smooth; the dense prior restores local deformation; the final prediction keeps the structural layout while slightly reducing the remaining error near difficult boundaries.}
+\label{fig:ablation_component_diagnostics}
+\end{figure}
+
+Figure~\ref{fig:ablation_component_diagnostics} makes the measured comparison more interpretable. In both examples, the \emph{slot prior} captures the main object motion but misses fine internal structure. The \emph{dense prior} adds the local deformation that is needed around rails, limbs, and contours. The \emph{final flow} is usually close to the dense prior, but the residual refiner still helps suppress a small amount of remaining error near thin boundaries and articulated details.
+
+This figure also clarifies why the stabilization changes were necessary. Dense recovery is beneficial precisely because it can correct the rigid object prior, but that same flexibility makes it capable of drifting away from the object structure. The confidence-gated refinement and slot-photo supervision were introduced to keep this correction focused on places where dense matching is actually trustworthy.
+
+\subsection{Ablation Summary}
+
+Taken together, the current ablation evidence supports a narrower but still meaningful claim. The key improvement from V5 to V5.1 comes from adding dense recovery on top of object memory and then stabilizing that dense branch so that it refines the object prior instead of replacing it. What remains to be completed is a fully factorized ablation grid over every individual module. Until those runs are available, the strongest supported conclusion is therefore a practical one: dense recovery plus stabilization clearly improves the earlier object-centric baseline, while the large-displacement tail remains the main failure mode left unresolved.

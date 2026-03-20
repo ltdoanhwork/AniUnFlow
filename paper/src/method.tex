@@ -2,17 +2,18 @@
 \section{Method}
 \label{sec:method}
 
-\subsection{Motivation and Overview}
+\subsection{System Overview}
 
-Recent optical flow architectures have shown that large-scale correspondence modeling and iterative refinement are highly effective for dense motion estimation, as evidenced by pyramid cost-volume methods such as PWC-Net and transformer-style or recurrent refiners such as RAFT and FlowFormer \cite{sun2018pwcnet,teed2020raft,huang2022flowformer}. However, these formulations are predominantly pixel-centric: they are excellent at estimating dense correspondences, yet they do not explicitly enforce that motion should be organized by semantically coherent objects or motion layers. In parallel, the classical layered-motion literature argues that scene dynamics are often better modeled by piecewise transformations with explicit visibility ordering, especially near occlusion boundaries and independently moving regions \cite{wang1994representing,sevillalara2016optical}. Finally, foundation segmentation models such as SAM and SAM~2 provide high-quality object partitions at scale, including strong video-aware segmentation priors \cite{kirillov2023segment,ravi2024sam2}. These observations suggest that object-level structure and dense correspondence should be complementary rather than competing priors.
+\textbf{AniUnFlow-SamT} is an unsupervised segment-guided multi-frame optical flow framework for 2D animation. The model combines: (i) SAM-guided object decomposition, (ii) temporal object memory over short clips, (iii) layered affine motion priors with occlusion-aware ordering, (iv) coarse-to-fine dense correlation refinement, and (v) boundary-aware residual correction. The design principle is to use object structure to organize motion estimation, while using dense matching to recover non-rigid and large-displacement details.
 
-Motivated by this view, we propose \textbf{V5.1 Object-Memory Dense}, a hybrid unsupervised optical flow architecture that combines: (i) object-centric motion decomposition induced by SAM masks, (ii) temporal object memory over multi-frame clips, (iii) layered affine motion priors with occlusion ordering, and (iv) dense multi-scale correlation refinement for large displacement and non-rigid motion. The design goal is to retain the structural bias of object-wise motion while recovering the expressive power of dense cost-volume refinement. In contrast to our earlier V5 branch, which relies primarily on slot-affine motion plus a residual corrector, V5.1 explicitly inserts dense local matching at two pyramid levels before the final residual refinement stage.
+Given a clip $\mathcal{I}=\{I_t\}_{t=1}^{T}$ with $T=5$ frames, the model predicts adjacent forward flows $\mathbf{F}_{t\rightarrow t+1}$, object correspondences, per-object affine parameters, ordering cues, dense refinements, and final residual corrections. The full pipeline is shown in Fig.~\ref{fig:pipeline_overview}.
 
-Given a clip $\mathcal{I}=\{I_t\}_{t=1}^{T}$ with $T=5$ frames, the model predicts adjacent forward flows $\mathbf{F}_{t\rightarrow t+1}$, optional long-gap motion priors, object correspondences, per-object affine parameters, per-object ordering scores, and dense residual corrections. The full pipeline can be summarized as
-\begin{equation}
-\label{eq:pipeline_overview}
-\text{SAM masks} \rightarrow \text{object slots} \rightarrow \text{temporal slot memory} \rightarrow \text{object matching} \rightarrow \text{affine flow prior} \rightarrow \text{dense correlation refinement} \rightarrow \text{boundary residual refinement}.
-\end{equation}
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.95\textwidth]{img/thesis-full_pipeline.jpg}
+\caption{Full pipeline of AniUnFlow-SamT. Starting from SAM masks and multi-scale feature extraction, the model performs temporal slot memory aggregation, object correspondence and layered affine prior estimation, coarse-to-fine dense correlation refinement, and boundary-aware residual correction to produce the final flow field. Conceptual flow: \emph{Structure $\rightarrow$ Motion prior $\rightarrow$ Dense recovery $\rightarrow$ Boundary refinement}.}
+\label{fig:pipeline_overview}
+\end{figure}
 
 \subsection{Problem Formulation}
 
@@ -31,9 +32,9 @@ where $\mathbf{F}^{\mathrm{dense}}_{t\rightarrow t+1}$ is already informed by bo
 
 \subsection{SAM-Guided Object Representation}
 
-Our first design choice is to make segmentation structure available at the representation level rather than only as an auxiliary loss. We begin by extracting a two-level feature pyramid from the input clip using a lightweight CNN encoder. Let $\phi_t^{(1)} \in \mathbb{R}^{C_1\times H_1\times W_1}$ and $\phi_t^{(2)} \in \mathbb{R}^{C_2\times H_2\times W_2}$ denote the level-1 and level-2 features for frame $t$. In the main V5.1 configuration, the encoder uses $40$ base channels, while the object slot dimensionality is set to $160$.
+Our first design choice is to make segmentation structure available at the representation level rather than only as an auxiliary loss. We begin by extracting a two-level feature pyramid from the input clip using a lightweight CNN encoder. Let $\phi_t^{(1)} \in \mathbb{R}^{C_1\times H_1\times W_1}$ and $\phi_t^{(2)} \in \mathbb{R}^{C_2\times H_2\times W_2}$ denote the level-1 and level-2 features for frame $t$. In the main AniUnFlow-SamT configuration, the encoder uses $40$ base channels, while the object slot dimensionality is set to $160$.
 
-When SAM encoder features are enabled, we additionally fuse SAM~2 image/video features into the second pyramid level. This design is motivated by the observation that SAM-style encoders provide high-quality region-aware descriptors and temporal segmentation cues \cite{kirillov2023segment,ravi2024sam2}. The fusion is applied before object pooling so that the object tokens inherit both appearance information and segmentation-aware context.
+When SAM encoder features are enabled, we additionally fuse SAM~2 image/video features into the second pyramid level. This design is motivated by the observation that SAM-style encoders provide high-quality region-aware descriptors and temporal segmentation cues \cite{sam,ravi2024sam2}. The fusion is applied before object pooling so that the object tokens inherit both appearance information and segmentation-aware context.
 
 Given the feature pyramid and the label map, we pool object descriptors from both pyramid levels. For each frame $t$ and slot index $s\in\{1,\dots,S\}$, we define the object support set
 \begin{equation}
@@ -97,7 +98,7 @@ This stage establishes the structured motion prior of the method. It enforces ob
 
 \subsection{Dense Correlation Recovery from the Object Prior}
 
-The affine slot prior provides strong structural regularization, but it is insufficient for large articulated motion or non-rigid motion within a single object. To address this limitation, V5.1 introduces dense local matching at two pyramid levels, inspired by the success of cost-volume and warping-based optical flow estimation \cite{sun2018pwcnet,teed2020raft,huang2022flowformer}.
+The affine slot prior provides strong structural regularization, but it is insufficient for large articulated motion or non-rigid motion within a single object. To address this limitation, AniUnFlow-SamT introduces dense local matching at two pyramid levels, inspired by the success of cost-volume and warping-based optical flow estimation \cite{pwcnet,raft,flowformer}.
 
 We first rasterize the affine slot motion at level~2 to obtain $\mathbf{F}^{\mathrm{slot},(2)}_{t\rightarrow t+1}$. We then warp target features with this prior and build a local correlation volume over a search window $\Delta \in [-r_2,r_2]^2$:
 \begin{equation}
@@ -130,7 +131,7 @@ leading to the refined dense prior
 \end{equation}
 The level-1 search radius is $r_1=4$. The dense confidence used by the final refiner is defined as the maximum of the upsampled coarse confidence and the fine-level confidence.
 
-This coarse-to-fine dense recovery is the key distinction between the original object-memory branch and V5.1. Rather than asking a single residual branch to recover all deviations from the object prior, V5.1 first introduces explicit dense evidence through local correlation volumes, then reserves the final residual stage for boundary-sensitive corrections.
+This coarse-to-fine dense recovery is a key distinction from slot-affine-only designs. Rather than asking a single residual branch to recover all deviations from the object prior, AniUnFlow-SamT first introduces explicit dense evidence through local correlation volumes, then reserves the final residual stage for boundary-sensitive corrections.
 
 \subsection{Boundary-Aware Refinement and Learning}
 
@@ -147,10 +148,14 @@ To avoid collapsing back into a fully unconstrained dense predictor, the residua
 We train the model without ground-truth flow using a combination of photometric, geometric, object-consistency, and self-distillation losses. The overall objective is
 \begin{equation}
 \label{eq:total_loss}
-\mathcal{L} = \mathcal{L}_{\mathrm{unsup}} + \lambda_{\mathrm{sw}}\mathcal{L}_{\mathrm{segwarp}} + \lambda_{\mathrm{pr}}\mathcal{L}_{\mathrm{piece}} + \lambda_{\mathrm{ds}}\mathcal{L}_{\mathrm{dense-slot}} + \lambda_{\mathrm{cyc}}\mathcal{L}_{\mathrm{cycle}} + \lambda_{\mathrm{ord}}\mathcal{L}_{\mathrm{order}} + \lambda_{\mathrm{br}}\mathcal{L}_{\mathrm{boundary}} + \lambda_{\mathrm{dist}}\mathcal{L}_{\mathrm{distill}}.
+\begin{aligned}
+\mathcal{L} = {}& \mathcal{L}_{\mathrm{unsup}} + \lambda_{\mathrm{sw}}\mathcal{L}_{\mathrm{segwarp}} + \lambda_{\mathrm{pr}}\mathcal{L}_{\mathrm{piece}} \\
+& + \lambda_{\mathrm{ds}}\mathcal{L}_{\mathrm{dense-slot}} + \lambda_{\mathrm{cyc}}\mathcal{L}_{\mathrm{cycle}} + \lambda_{\mathrm{ord}}\mathcal{L}_{\mathrm{order}} \\
+& + \lambda_{\mathrm{br}}\mathcal{L}_{\mathrm{boundary}} + \lambda_{\mathrm{dist}}\mathcal{L}_{\mathrm{distill}}.
+\end{aligned}
 \end{equation}
 
-The term $\mathcal{L}_{\mathrm{unsup}}$ follows the standard bidirectional unsupervised optical flow recipe based on photometric reconstruction, smoothness, forward--backward consistency, and occlusion-aware masking \cite{meister2018unflow}. On top of this, we add segment warp consistency,
+The term $\mathcal{L}_{\mathrm{unsup}}$ follows the standard bidirectional unsupervised optical flow recipe based on photometric reconstruction, smoothness, forward--backward consistency, and occlusion-aware masking \cite{unflow}. On top of this, we add segment warp consistency,
 \begin{equation}
 \mathcal{L}_{\mathrm{segwarp}} = \sum_t \left\| \mathrm{warp}(\mathrm{onehot}(L_t),\mathbf{F}_{t\rightarrow t+1}) - \mathbf{A}_t\,\mathrm{onehot}(L_{t+1}) \right\|_1,
 \end{equation}
@@ -159,7 +164,7 @@ which encourages the dense motion field to remain compatible with the object cor
 \mathcal{L}_{\mathrm{piece}} = \sum_t \left\| \|\mathbf{R}_{t\rightarrow t+1}\|_2 \odot (1-\mathbf{B}_t) \odot \mathbf{Q}_t \right\|_1.
 \end{equation}
 
-The new V5.1 term regularizes the dense prior to stay close to the slot-affine motion within confident object interiors:
+The dense-slot term in AniUnFlow-SamT regularizes the dense prior to stay close to the slot-affine motion within confident object interiors:
 \begin{equation}
 \mathcal{L}_{\mathrm{dense-slot}} = \sum_t \left\| \|\mathbf{F}^{\mathrm{dense}}_{t\rightarrow t+1} - \mathbf{F}^{\mathrm{slot},(1)}_{t\rightarrow t+1}\|_2 \odot (1-\mathbf{B}_t) \odot \mathbf{Q}_t \right\|_1.
 \end{equation}
@@ -173,10 +178,10 @@ Layered ordering consistency encourages agreement between correspondence, visibi
 \begin{equation}
 \mathcal{L}_{\mathrm{boundary}} = \sum_t \frac{\mathbb{E}[\|\mathbf{R}_{t\rightarrow t+1}\|_2 \mid \mathbf{p}\in \mathrm{interior}]}{\mathbb{E}[\|\mathbf{R}_{t\rightarrow t+1}\|_2 \mid \mathbf{p}\in \mathrm{boundary}] + \epsilon}.
 \end{equation}
-Finally, following self-distillation ideas in unsupervised flow learning \cite{liu2019ddflow}, we maintain an exponential moving average teacher and penalize disagreement between student and teacher flows in confident regions. The teacher is activated only after an initial warm-up period so that early unstable predictions are not reinforced.
+Finally, following self-distillation ideas in unsupervised flow learning \cite{ddflow}, we maintain an exponential moving average teacher and penalize disagreement between student and teacher flows in confident regions. The teacher is activated only after an initial warm-up period so that early unstable predictions are not reinforced.
 
 We employ a staged curriculum to progressively increase difficulty. During the initial stage, the model is trained on stride-$1$ clips without the residual branch, which forces learning to concentrate on object correspondence and affine motion. In the second stage, we expand the temporal stride range and enable both the dense residual branch and layered-order regularization. In later stages, we enable long-gap photometric consistency and segment-cycle losses, and finally increase the maximum clip stride to expose the model to larger displacement.
 
-For the main V5.1 configuration, we use: $T=5$, $S=32$ object slots, encoder width $40$, slot dimension $160$, temporal memory depth $3$, level-2 correlation radius $6$, level-1 correlation radius $4$, and a dense-prior fusion weight $\alpha=0.72$. The residual refiner uses $128$ hidden channels and $4$ residual-style convolutional blocks. Optimization is performed with AdamW, OneCycle learning-rate scheduling, mixed precision, gradient clipping, and an EMA teacher. These settings follow the practical observation that unsupervised optical flow benefits from strong optimization control and staged training, especially when multiple regularizers are activated progressively \cite{meister2018unflow,liu2019ddflow}.
+For the main configuration, we use: $T=5$, $S=32$ object slots, encoder width $40$, slot dimension $160$, temporal memory depth $3$, level-2 correlation radius $6$, level-1 correlation radius $4$, and a dense-prior fusion weight $\alpha=0.72$. The residual refiner uses $128$ hidden channels and $4$ residual-style convolutional blocks. Optimization is performed with AdamW, OneCycle learning-rate scheduling, mixed precision, gradient clipping, and an EMA teacher. These settings follow the practical observation that unsupervised optical flow benefits from strong optimization control and staged training, especially when multiple regularizers are activated progressively \cite{unflow,ddflow}.
 
 Taken together, the method follows a simple progression. SAM first organizes the scene into coherent motion units; temporal memory stabilizes those units over the clip; layered affine reasoning converts them into a structured motion prior; dense correlation restores large and non-rigid motion detail; and the final boundary-aware refiner concentrates corrective capacity where dense motion estimation remains hardest. This is the central principle of the model: object structure should organize motion estimation, and dense correspondence should refine it rather than replace it.

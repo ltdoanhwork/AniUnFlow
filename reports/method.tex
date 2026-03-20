@@ -1,0 +1,194 @@
+% This section expects bibliography entries from method_refs.bib.
+\section{Method}
+\label{sec:method}
+
+\subsection{Motivation and Overview}
+
+Recent optical flow architectures have shown that large-scale correspondence modeling and iterative refinement are highly effective for dense motion estimation, as evidenced by pyramid cost-volume methods such as PWC-Net and transformer-style or recurrent refiners such as RAFT and FlowFormer \cite{sun2018pwcnet,teed2020raft,huang2022flowformer}. However, these formulations are predominantly pixel-centric: they are excellent at estimating dense correspondences, yet they do not explicitly enforce that motion should be organized by semantically coherent objects or motion layers. In parallel, the classical layered-motion literature argues that scene dynamics are often better modeled by piecewise transformations with explicit visibility ordering, especially near occlusion boundaries and independently moving regions \cite{wang1994representing,sevillalara2016optical}. Finally, foundation segmentation models such as SAM and SAM~2 provide high-quality object partitions at scale, including strong video-aware segmentation priors \cite{kirillov2023segment,ravi2024sam2}. These observations suggest that object-level structure and dense correspondence should be complementary rather than competing priors.
+
+Motivated by this view, we propose \textbf{V5.1 Object-Memory Dense}, a hybrid unsupervised optical flow architecture that combines: (i) object-centric motion decomposition induced by SAM masks, (ii) temporal object memory over multi-frame clips, (iii) layered affine motion priors with occlusion ordering, and (iv) dense multi-scale correlation refinement for large displacement and non-rigid motion. The design goal is to retain the structural bias of object-wise motion while recovering the expressive power of dense cost-volume refinement. In contrast to our earlier V5 branch, which relies primarily on slot-affine motion plus a residual corrector, V5.1 explicitly inserts dense local matching at two pyramid levels before the final residual refinement stage and stabilizes that dense branch with confidence-aware gating.
+
+Given a clip $\mathcal{I}=\{I_t\}_{t=1}^{T}$ with $T=5$ frames, the model predicts adjacent forward flows $\mathbf{F}_{t\rightarrow t+1}$, optional long-gap motion priors, object correspondences, per-object affine parameters, per-object ordering scores, and dense residual corrections. The full pipeline can be summarized as
+\begin{equation}
+\label{eq:pipeline_overview}
+\text{SAM masks} \rightarrow \text{object slots} \rightarrow \text{temporal slot memory} \rightarrow \text{object matching} \rightarrow \text{affine flow prior} \rightarrow \text{dense correlation refinement} \rightarrow \text{boundary residual refinement}.
+\end{equation}
+
+\subsection{Problem Formulation}
+
+For each frame $I_t \in \mathbb{R}^{3\times H\times W}$, we assume access to a SAM-derived label map $L_t \in \{0,1,\dots,S\}^{H\times W}$, where label $0$ denotes background and $S$ is the maximum number of object slots. In our main configuration, $S=32$. The goal is to estimate dense forward flow fields
+\begin{equation}
+\mathbf{F}_{t\rightarrow t+1} \in \mathbb{R}^{2\times H'\times W'}, \qquad t=1,\dots,T-1,
+\end{equation}
+without ground-truth optical flow supervision. Here $(H',W')$ denotes the output resolution of the finest decoder level.
+
+The key modeling assumption is that each frame can be decomposed into a set of object-conditioned motion regions, but that within-region motion may still be non-rigid. Therefore, rather than forcing a purely parametric motion model, we represent flow as the sum of a structured dense prior and a boundary-aware residual:
+\begin{equation}
+\label{eq:flow_decomposition}
+\mathbf{F}_{t\rightarrow t+1} = \mathbf{F}^{\mathrm{dense}}_{t\rightarrow t+1} + \mathbf{R}_{t\rightarrow t+1},
+\end{equation}
+where $\mathbf{F}^{\mathrm{dense}}_{t\rightarrow t+1}$ is already informed by both object motion and dense correspondence, and $\mathbf{R}_{t\rightarrow t+1}$ is reserved for boundary-sensitive correction.
+
+\subsection{SAM-Guided Object Representation}
+
+Our first design choice is to make segmentation structure available at the representation level rather than only as an auxiliary loss. We begin by extracting a two-level feature pyramid from the input clip using a lightweight CNN encoder. Let $\phi_t^{(1)} \in \mathbb{R}^{C_1\times H_1\times W_1}$ and $\phi_t^{(2)} \in \mathbb{R}^{C_2\times H_2\times W_2}$ denote the level-1 and level-2 features for frame $t$. In the main V5.1 configuration, the encoder uses $40$ base channels, while the object slot dimensionality is set to $160$.
+
+When SAM encoder features are enabled, we additionally fuse SAM~2 image/video features into the second pyramid level. This design is motivated by the observation that SAM-style encoders provide high-quality region-aware descriptors and temporal segmentation cues \cite{kirillov2023segment,ravi2024sam2}. The fusion is applied before object pooling so that the object tokens inherit both appearance information and segmentation-aware context.
+
+Given the feature pyramid and the label map, we pool object descriptors from both pyramid levels. For each frame $t$ and slot index $s\in\{1,\dots,S\}$, we define the object support set
+\begin{equation}
+\Omega_{t,s}^{(l)} = \{\mathbf{p} : L_t^{(l)}(\mathbf{p}) = s\},
+\end{equation}
+where $L_t^{(l)}$ is the SAM label map resized to pyramid level $l$. We then compute level-wise pooled descriptors by average aggregation,
+\begin{equation}
+\mathbf{z}_{t,s}^{(l)} = \frac{1}{|\Omega_{t,s}^{(l)}|} \sum_{\mathbf{p} \in \Omega_{t,s}^{(l)}} \mathbf{P}^{(l)}\phi_t^{(l)}(\mathbf{p}),
+\end{equation}
+where $\mathbf{P}^{(l)}$ is a learned projection into the slot space. The final object token is obtained by fusing the two pooled descriptors:
+\begin{equation}
+\mathbf{z}_{t,s} = f_{\mathrm{slot}}\left([\mathbf{z}_{t,s}^{(1)} ; \mathbf{z}_{t,s}^{(2)}]\right),
+\end{equation}
+where $f_{\mathrm{slot}}(\cdot)$ is a two-layer MLP.
+
+This representation stage is important for two reasons. First, it injects an explicit object prior into the motion pipeline. Second, it converts dense per-pixel evidence into a compact token set that is easier to stabilize temporally. In contrast to dense-only pipelines, the model is encouraged to reason first about coherent motion units, which is aligned with layered motion models and localized layer formulations \cite{wang1994representing,sevillalara2016optical}.
+
+\subsection{Temporal Object Reasoning and Layered Motion Prior}
+
+Pairwise matching alone is often brittle in anime-like content, where appearance may change abruptly across frames because of stylized deformation, sparse texture, or line-art flicker. We therefore aggregate object tokens across the full clip using a temporal transformer encoder \cite{vaswani2017attention}. Let
+\begin{equation}
+\mathbf{Z} = [\mathbf{z}_{t,s}]_{t=1,s=1}^{T,\,S} \in \mathbb{R}^{T\times S\times D}
+\end{equation}
+be the stacked slot tensor. We add learnable time and slot embeddings and process the flattened sequence with a transformer encoder:
+\begin{equation}
+\widetilde{\mathbf{Z}} = \mathrm{TransformerEnc}(\mathbf{Z} + \mathbf{E}_{\mathrm{time}} + \mathbf{E}_{\mathrm{slot}}).
+\end{equation}
+The resulting memory-enhanced tokens $\tilde{\mathbf{z}}_{t,s}$ provide temporally contextualized object descriptors. In our main configuration, we use a $3$-layer temporal encoder with $4$ attention heads.
+
+For adjacent frames $(t,t+1)$, we then compute an object correspondence matrix by combining dot-product similarity in slot space with a mask-overlap prior:
+\begin{equation}
+\label{eq:slot_matching}
+\mathbf{A}_t = \mathrm{softmax}\left(\frac{\widetilde{\mathbf{Z}}_t\widetilde{\mathbf{Z}}_{t+1}^{\top}}{\sqrt{D}} + \lambda_{\mathrm{iou}}\,\mathrm{IoU}(L_t^{(1)},L_{t+1}^{(1)})\right),
+\end{equation}
+where $\lambda_{\mathrm{iou}}$ controls the contribution of label overlap. The matched target slot representation is then
+\begin{equation}
+\hat{\mathbf{z}}_{t,s} = \sum_{j=1}^{S} A_t(s,j)\,\tilde{\mathbf{z}}_{t+1,j},
+\end{equation}
+and the slot confidence is defined as $c_{t,s}=\max_j A_t(s,j)$. The role of temporal memory here is not to replace dense optical flow estimation, but to stabilize object identity and correspondence across the clip so that later dense matching is seeded with a plausible object-level prior rather than learned from scratch at every frame pair.
+
+Given the matched slot descriptors, we estimate a 6-parameter affine motion vector for each source slot:
+\begin{equation}
+\boldsymbol{\theta}_{t,s} = f_{\mathrm{aff}}\left([\tilde{\mathbf{z}}_{t,s};\hat{\mathbf{z}}_{t,s}]\right) \in \mathbb{R}^{6}.
+\end{equation}
+This parameterization yields a slot-wise parametric motion field
+\begin{equation}
+\mathbf{u}_{t,s}^{\mathrm{slot}}(x,y) =
+\begin{bmatrix}
+a_{t,s}x + b_{t,s}y + c_{t,s}\\
+d_{t,s}x + e_{t,s}y + f_{t,s}
+\end{bmatrix},
+\end{equation}
+which is rasterized to the image according to the object labels:
+\begin{equation}
+\mathbf{F}^{\mathrm{slot}}_{t\rightarrow t+1}(\mathbf{p}) = \sum_{s=1}^{S} \mathbf{1}[L_t^{(1)}(\mathbf{p})=s] \, \mathbf{u}_{t,s}^{\mathrm{slot}}(\mathbf{p}).
+\end{equation}
+
+In parallel, the model predicts an ordering score $o_{t,s}$ and an occlusion probability $q_{t,s}$ per slot. This follows the layered-motion intuition that moving entities should not only be matched, but also ordered in relative visibility to better explain occlusions and disocclusions \cite{wang1994representing,sevillalara2016optical}. We do not interpret the ordering score as metric depth; rather, it is a latent variable used to regularize temporal ordering consistency.
+
+This stage establishes the structured motion prior of the method. It enforces object-level coherence and visibility-aware reasoning, but it is still limited by the rigidity of affine motion inside each segment. This limitation motivates the next stage.
+
+\subsection{Dense Correlation Recovery from the Object Prior}
+
+The affine slot prior provides strong structural regularization, but it is insufficient for large articulated motion or non-rigid motion within a single object. To address this limitation, V5.1 introduces dense local matching at two pyramid levels, inspired by the success of cost-volume and warping-based optical flow estimation \cite{sun2018pwcnet,teed2020raft,huang2022flowformer}.
+
+We first rasterize the affine slot motion at level~2 to obtain $\mathbf{F}^{\mathrm{slot},(2)}_{t\rightarrow t+1}$. We then warp target features with this prior and build a local correlation volume over a search window $\Delta \in [-r_2,r_2]^2$:
+\begin{equation}
+\label{eq:l2_corr}
+\mathcal{C}_t^{(2)}(\mathbf{p},\Delta) = \left\langle \bar{\phi}_t^{(2)}(\mathbf{p}),\, \bar{\phi}_{t+1}^{(2)}\left(\mathbf{p} + \mathbf{F}^{\mathrm{slot},(2)}_{t\rightarrow t+1}(\mathbf{p}) + \Delta\right) \right\rangle,
+\end{equation}
+where $\bar{\phi}$ denotes channel-wise normalized features. A convolutional refinement head predicts a level-2 correction and a dense confidence map:
+\begin{equation}
+\delta \mathbf{F}_t^{(2)},\, \mathbf{C}_t^{(2)} = g_2\left(\phi_t^{(2)},\, \mathrm{warp}(\phi_{t+1}^{(2)},\mathbf{F}^{\mathrm{slot},(2)}),\, \mathbf{F}^{\mathrm{slot},(2)},\, \mathcal{C}_t^{(2)}\right),
+\end{equation}
+which is then modulated by a confidence gate. Let $c^{\mathrm{slot}}_t(\mathbf{p})$ denote the rasterized slot-matching confidence and let $c^{\mathrm{corr},(2)}_t(\mathbf{p})$ denote the predicted dense-correlation confidence. We define
+\begin{equation}
+\mathbf{G}^{(2)}_t(\mathbf{p}) = \gamma + (1-\gamma)\,c^{\mathrm{slot}}_t(\mathbf{p})\,c^{\mathrm{corr},(2)}_t(\mathbf{p}),
+\end{equation}
+where $\gamma$ is a small floor term used in the implementation. The gated level-2 update yields
+\begin{equation}
+\mathbf{F}^{\mathrm{dense},(2)}_{t\rightarrow t+1} = \mathbf{F}^{\mathrm{slot},(2)}_{t\rightarrow t+1} + \mathbf{G}^{(2)}_t \odot \delta \mathbf{F}_t^{(2)}.
+\end{equation}
+In our main configuration, the level-2 search radius is $r_2=6$.
+
+At level~1, we upsample the refined level-2 field and fuse it with the slot-affine level-1 prior:
+\begin{equation}
+\label{eq:prior_blend}
+\mathbf{F}^{\mathrm{prior},(1)}_{t\rightarrow t+1} = \alpha\,\uparrow\!\left(\mathbf{F}^{\mathrm{dense},(2)}_{t\rightarrow t+1}\right) + (1-\alpha)\,\mathbf{F}^{\mathrm{slot},(1)}_{t\rightarrow t+1},
+\end{equation}
+where $\alpha\in[0,1]$ is a learned mixing coefficient fixed by configuration in our implementation ($\alpha=0.40$ for the main model). The level-1 refinement head again constructs a local correlation volume around this blended prior and predicts a finer correction:
+\begin{equation}
+\delta \mathbf{F}_t^{(1)},\, \mathbf{C}_t^{(1)} = g_1\left(\phi_t^{(1)},\, \mathrm{warp}(\phi_{t+1}^{(1)},\mathbf{F}^{\mathrm{prior},(1)}),\, \mathbf{F}^{\mathrm{prior},(1)},\, \mathcal{C}_t^{(1)}\right),
+\end{equation}
+with an analogous confidence gate $\mathbf{G}^{(1)}_t$. This leads to the refined dense prior
+\begin{equation}
+\label{eq:dense_prior}
+\mathbf{F}^{\mathrm{dense}}_{t\rightarrow t+1} = \mathbf{F}^{\mathrm{prior},(1)}_{t\rightarrow t+1} + \mathbf{G}^{(1)}_t \odot \delta \mathbf{F}_t^{(1)}.
+\end{equation}
+The level-1 search radius is $r_1=4$. The dense confidence used by the final refiner is defined as the maximum of the upsampled coarse confidence and the fine-level confidence.
+
+This coarse-to-fine dense recovery is the key distinction between the original object-memory branch and V5.1. Rather than asking a single residual branch to recover all deviations from the object prior, V5.1 first introduces explicit dense evidence through local correlation volumes, then reserves the final residual stage for boundary-sensitive corrections.
+
+\subsection{Boundary-Aware Refinement and Learning}
+
+Even after dense correlation refinement, motion discontinuities remain difficult around thin structures, occlusion edges, and expressive non-rigid deformations. We therefore predict a final residual correction with a boundary-aware refinement network:
+\begin{equation}
+\mathbf{R}_{t\rightarrow t+1} = h\left(\phi_t^{(1)},\phi_{t+1}^{(1)},\mathbf{F}^{\mathrm{dense}}_{t\rightarrow t+1},\mathbf{B}_t,\mathbf{Q}_t\right),
+\end{equation}
+where $\mathbf{B}_t$ is the SAM-derived boundary map and $\mathbf{Q}_t$ is a confidence map derived from the joint slot and dense-correlation confidences. The final flow is
+\begin{equation}
+\mathbf{F}_{t\rightarrow t+1} = \mathbf{F}^{\mathrm{dense}}_{t\rightarrow t+1} + \mathbf{R}_{t\rightarrow t+1}.
+\end{equation}
+To avoid collapsing back into a fully unconstrained dense predictor, the residual magnitude is softly modulated by the boundary map, so that most corrective energy is encouraged to concentrate near object boundaries.
+
+We train the model without ground-truth flow using a combination of photometric, geometric, object-consistency, and self-distillation losses. The overall objective is
+\begin{equation}
+\label{eq:total_loss}
+\mathcal{L} = \mathcal{L}_{\mathrm{unsup}} + \lambda_{\mathrm{sw}}\mathcal{L}_{\mathrm{segwarp}} + \lambda_{\mathrm{sp}}\mathcal{L}_{\mathrm{slot-photo}} + \lambda_{\mathrm{pr}}\mathcal{L}_{\mathrm{piece}} + \lambda_{\mathrm{ds}}\mathcal{L}_{\mathrm{dense-slot}} + \lambda_{\mathrm{cyc}}\mathcal{L}_{\mathrm{cycle}} + \lambda_{\mathrm{ord}}\mathcal{L}_{\mathrm{order}} + \lambda_{\mathrm{br}}\mathcal{L}_{\mathrm{boundary}} + \lambda_{\mathrm{dist}}\mathcal{L}_{\mathrm{distill}}.
+\end{equation}
+
+The term $\mathcal{L}_{\mathrm{unsup}}$ follows the standard bidirectional unsupervised optical flow recipe based on photometric reconstruction, smoothness, forward--backward consistency, and occlusion-aware masking \cite{meister2018unflow}. On top of this, we add segment warp consistency,
+\begin{equation}
+\mathcal{L}_{\mathrm{segwarp}} = \sum_t \left\| \mathrm{warp}(\mathrm{onehot}(L_t),\mathbf{F}_{t\rightarrow t+1}) - \mathbf{A}_t\,\mathrm{onehot}(L_{t+1}) \right\|_1,
+\end{equation}
+which encourages the dense motion field to remain compatible with the object correspondence graph. We also penalize residual magnitude away from boundaries:
+\begin{equation}
+\mathcal{L}_{\mathrm{piece}} = \sum_t \left\| \|\mathbf{R}_{t\rightarrow t+1}\|_2 \odot (1-\mathbf{B}_t) \odot \mathbf{Q}_t \right\|_1.
+\end{equation}
+
+The new V5.1 term regularizes the dense prior to stay close to the slot-affine motion within confident object interiors:
+\begin{equation}
+\mathcal{L}_{\mathrm{dense-slot}} = \sum_t \left\| \|\mathbf{F}^{\mathrm{dense}}_{t\rightarrow t+1} - \mathbf{F}^{\mathrm{slot},(1)}_{t\rightarrow t+1}\|_2 \odot (1-\mathbf{B}_t) \odot \mathbf{Q}_t \right\|_1.
+\end{equation}
+This term is crucial: it allows dense correlation to repair large motion while discouraging it from destroying the object-centric prior in stable interior regions.
+
+To keep the object prior itself from collapsing, we additionally apply the standard unsupervised bidirectional objective directly to the rasterized slot flow:
+\begin{equation}
+\mathcal{L}_{\mathrm{slot-photo}} = \mathcal{L}_{\mathrm{unsup}}\!\left(\mathbf{F}^{\mathrm{slot}}_{t\rightarrow t+1}\right).
+\end{equation}
+This auxiliary term is deliberately lightweight, but in practice it is important because it preserves a meaningful slot-based motion estimate that the dense branch can refine rather than overwrite.
+
+For clips with $T\geq 3$, we also compute long-gap object correspondence $\mathbf{A}_{t,t+2}$ and enforce composition consistency:
+\begin{equation}
+\mathcal{L}_{\mathrm{cycle}} = \sum_t \left\| \mathbf{A}_{t,t+1}\mathbf{A}_{t+1,t+2} - \mathbf{A}_{t,t+2} \right\|_1.
+\end{equation}
+Layered ordering consistency encourages agreement between correspondence, visibility reasoning, and ordering scores, while the boundary specialization term penalizes residual energy in interiors relative to boundaries:
+\begin{equation}
+\mathcal{L}_{\mathrm{boundary}} = \sum_t \frac{\mathbb{E}[\|\mathbf{R}_{t\rightarrow t+1}\|_2 \mid \mathbf{p}\in \mathrm{interior}]}{\mathbb{E}[\|\mathbf{R}_{t\rightarrow t+1}\|_2 \mid \mathbf{p}\in \mathrm{boundary}] + \epsilon}.
+\end{equation}
+Finally, following self-distillation ideas in unsupervised flow learning \cite{liu2019ddflow}, we maintain an exponential moving average teacher and penalize disagreement between student and teacher flows in confident regions. The teacher is activated only after an initial warm-up period so that early unstable predictions are not reinforced.
+
+We employ a staged curriculum to progressively increase difficulty. During the initial stage, the model is trained on stride-$1$ clips without the residual branch, which forces learning to concentrate on object correspondence and affine motion. In the second stage, we enable the residual branch while still keeping layered ordering and long-gap consistency disabled. In the third stage, we increase the stride range to expose the model to larger motion while preserving this stabilized objective. Only in the later stages do we activate long-gap photometric consistency, segment-cycle losses, and layered-order supervision.
+
+For the main V5.1 configuration, we use: $T=5$, $S=32$ object slots, encoder width $40$, slot dimension $160$, temporal memory depth $3$, level-2 correlation radius $6$, level-1 correlation radius $4$, and a dense-prior fusion weight $\alpha=0.40$. The residual refiner uses $128$ hidden channels and $4$ residual-style convolutional blocks. Initial optimization is performed with AdamW, OneCycle learning-rate scheduling, mixed precision, gradient clipping, and an EMA teacher. The final reported model is then obtained by a conservative low-learning-rate cosine fine-tuning stage starting from the best stabilized checkpoint.
+
+In practice, the most important training lesson of V5.1 was that dense recovery can otherwise dominate the object prior too early. The confidence-gated dense updates and the slot-photo auxiliary objective were therefore not cosmetic additions; they were required to keep the hybrid architecture behaving as intended. This practical detail is also reflected in the empirical results, where the stabilized and fine-tuned V5.1 runs consistently improve on the earlier object-only branch.
+
+Taken together, the method follows a simple progression. SAM first organizes the scene into coherent motion units; temporal memory stabilizes those units over the clip; layered affine reasoning converts them into a structured motion prior; dense correlation then restores local motion detail under the control of confidence-aware gates; and the final boundary-aware refiner concentrates corrective capacity where dense motion estimation remains hardest. This is the central principle of the model: object structure should organize motion estimation, and dense correspondence should refine it rather than replace it. The current empirical results support this principle, but they also show that extremely large displacement remains an open challenge rather than a solved one.

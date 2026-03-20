@@ -1,5 +1,5 @@
 seed: 1337
-workspace: workspaces/v5_1_object_memory_dense_parallel
+workspace: workspaces/v5_1_object_memory_dense_parallel_ft
 
 data:
   name: animerun_clip
@@ -7,7 +7,7 @@ data:
   val_root: data/AnimeRun_v2/
   T: 5
   stride_min: 1
-  stride_max: 3
+  stride_max: 2
   crop_size: [256, 512]
   resize: true
   keep_aspect: false
@@ -84,36 +84,33 @@ loss:
   layered_order: 0.01
   boundary_residual: 0.018
   dense_slot_consistency: 0.20
-  long_gap_photo_weight: 0.06
-  long_gap_consistency_weight: 0.02
-  long_gap_start_epoch: 14
-  long_gap_ramp_epochs: 6
+  long_gap_photo_weight: 0.04
+  long_gap_consistency_weight: 0.015
+  long_gap_start_epoch: 24
+  long_gap_ramp_epochs: 4
 
 optim:
-  lr: 3.0e-5
+  lr: 8.0e-6
   weight_decay: 1.0e-4
-  epochs: 60
-  warmup_epochs: 4
+  epochs: 32
+  warmup_epochs: 0
   clip: 0.6
   accum_steps: 2
   freeze_encoder_epoch: 0
   scheduler:
-    type: onecycle
-    max_lr: 4.8e-5
-    pct_start: 0.08
-    div_factor: 10.0
-    final_div_factor: 1000.0
-    anneal_strategy: cos
+    type: cosine
+    min_lr: 1.0e-6
+    per_batch: false
 
 logging:
   use_tb: true
-  tb_dir: tb_v5_1_object_memory_dense_parallel
+  tb_dir: tb_v5_1_object_memory_dense_finetune
   log_every: 100
 
 validation:
-  every_n_epochs: 4
-  early_stop_delta: 0.5
-  early_stop_patience: 6
+  every_n_epochs: 1
+  early_stop_delta: 0.3
+  early_stop_patience: 4
 
 teacher:
   enabled: true
@@ -128,21 +125,12 @@ runtime:
   nan_guard_flow_clip: 500.0
   schedule:
     - start_epoch: 1
-      end_epoch: 6
+      end_epoch: 12
       stride_min: 1
       stride_max: 1
       enable_occ_aware: false
       enable_long_gap: false
       enable_residual_branch: false
-      enable_segment_cycle: false
-      enable_layered_order: false
-    - start_epoch: 7
-      end_epoch: 12
-      stride_min: 1
-      stride_max: 1
-      enable_occ_aware: true
-      enable_long_gap: false
-      enable_residual_branch: true
       enable_segment_cycle: false
       enable_layered_order: false
     - start_epoch: 13
@@ -155,7 +143,7 @@ runtime:
       enable_segment_cycle: false
       enable_layered_order: false
     - start_epoch: 25
-      end_epoch: 40
+      end_epoch: 32
       stride_min: 1
       stride_max: 2
       enable_occ_aware: true
@@ -163,17 +151,8 @@ runtime:
       enable_residual_branch: true
       enable_segment_cycle: true
       enable_layered_order: true
-    - start_epoch: 41
-      end_epoch: 60
-      stride_min: 1
-      stride_max: 3
-      enable_occ_aware: true
-      enable_long_gap: true
-      enable_residual_branch: true
-      enable_segment_cycle: true
-      enable_layered_order: true
 
 ckpt:
-  save_every: 5
+  save_every: 2
   keep_last: 3
   save_best: true

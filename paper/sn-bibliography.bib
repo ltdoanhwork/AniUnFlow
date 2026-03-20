@@ -1,0 +1,386 @@
+@InProceedings{sintel,
+author="Butler, Daniel J.
+and Wulff, Jonas
+and Stanley, Garrett B.
+and Black, Michael J.",
+editor="Fitzgibbon, Andrew
+and Lazebnik, Svetlana
+and Perona, Pietro
+and Sato, Yoichi
+and Schmid, Cordelia",
+title="A Naturalistic Open Source Movie for Optical Flow Evaluation",
+booktitle="Computer Vision -- ECCV 2012",
+year="2012",
+publisher="Springer Berlin Heidelberg",
+address="Berlin, Heidelberg",
+pages="611--625",
+abstract="Ground truth optical flow is difficult to measure in real scenes with natural motion. As a result, optical flow data sets are restricted in terms of size, complexity, and diversity, making optical flow algorithms difficult to train and test on realistic data. We introduce a new optical flow data set derived from the open source 3D animated short film Sintel. This data set has important features not present in the popular Middlebury flow evaluation: long sequences, large motions, specular reflections, motion blur, defocus blur, and atmospheric effects. Because the graphics data that generated the movie is open source, we are able to render scenes under conditions of varying complexity to evaluate where existing flow algorithms fail. We evaluate several recent optical flow algorithms and find that current highly-ranked methods on the Middlebury evaluation have difficulty with this more complex data set suggesting further research on optical flow estimation is needed. To validate the use of synthetic data, we compare the image- and flow-statistics of Sintel to those of real films and videos and show that they are similar. The data set, metrics, and evaluation website are publicly available.",
+isbn="978-3-642-33783-3"
+}
+
+@article{ft3d,
+  title={A Large Dataset to Train Convolutional Networks for Disparity, Optical Flow, and Scene Flow Estimation},
+  author={Nikolaus Mayer and Eddy Ilg and Philip H{\"a}usser and Philipp Fischer and Daniel Cremers and Alexey Dosovitskiy and Thomas Brox},
+  journal={2016 IEEE Conference on Computer Vision and Pattern Recognition (CVPR)},
+  year={2015},
+  pages={4040-4048},
+  url={https://api.semanticscholar.org/CorpusID:206594275}
+}
+
+@INPROCEEDINGS {pwcnet,
+author = { Sun, Deqing and Yang, Xiaodong and Liu, Ming-Yu and Kautz, Jan },
+booktitle = { 2018 IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) },
+title = {{ PWC-Net: CNNs for Optical Flow Using Pyramid, Warping, and Cost Volume }},
+year = {2018},
+volume = {},
+ISSN = {},
+pages = {8934-8943},
+abstract = { We present a compact but effective CNN model for optical flow, called PWC-Net. PWC-Net has been designed according to simple and well-established principles: pyramidal processing, warping, and the use of a cost volume. Cast in a learnable feature pyramid, PWC-Net uses the current optical flow estimate to warp the CNN features of the second image. It then uses the warped features and features of the first image to construct a cost volume, which is processed by a CNN to estimate the optical flow. PWC-Net is 17 times smaller in size and easier to train than the recent FlowNet2 model. Moreover, it outperforms all published optical flow methods on the MPI Sintel final pass and KITTI 2015 benchmarks, running at about 35 fps on Sintel resolution (1024 Ã × 436) images. Our models are available on our project website. },
+keywords = {Optical imaging;Adaptive optics;Benchmark testing;Computational modeling;Task analysis;Feature extraction;Computer vision},
+doi = {10.1109/CVPR.2018.00931},
+url = {https://doi.ieeecomputersociety.org/10.1109/CVPR.2018.00931},
+publisher = {IEEE Computer Society},
+address = {Los Alamitos, CA, USA},
+month =Jun}
+
+
+@InProceedings{raft,
+author="Teed, Zachary
+and Deng, Jia",
+editor="Vedaldi, Andrea
+and Bischof, Horst
+and Brox, Thomas
+and Frahm, Jan-Michael",
+title="RAFT: Recurrent All-Pairs Field Transforms for Optical Flow",
+booktitle="Computer Vision -- ECCV 2020",
+year="2020",
+publisher="Springer International Publishing",
+address="Cham",
+pages="402--419",
+abstract="We introduce Recurrent All-Pairs Field Transforms (RAFT), a new deep network architecture for optical flow. RAFT extracts per-pixel features, builds multi-scale 4D correlation volumes for all pairs of pixels, and iteratively updates a flow field through a recurrent unit that performs lookups on the correlation volumes. RAFT achieves state-of-the-art performance. On KITTI, RAFT achieves an F1-all error of 5.10{\%}, a 16{\%} error reduction from the best published result (6.10{\%}). On Sintel (final pass), RAFT obtains an end-point-error of 2.855 pixels, a 30{\%} error reduction from the best published result (4.098 pixels). In addition, RAFT has strong cross-dataset generalization as well as high efficiency in inference time, training speed, and parameter count. Code is available at https://github.com/princeton-vl/RAFT.",
+isbn="978-3-030-58536-5"
+}
+
+@article{gma,
+  title={Learning to Estimate Hidden Motions with Global Motion Aggregation},
+  author={Shihao Jiang and Dylan Campbell and Yao Lu and Hongdong Li and Richard I. Hartley},
+  journal={2021 IEEE/CVF International Conference on Computer Vision (ICCV)},
+  year={2021},
+  pages={9752-9761},
+  url={https://api.semanticscholar.org/CorpusID:233033368}
+}
+
+@article{gmflow,
+  title={GMFlow: Learning Optical Flow via Global Matching},
+  author={Haofei Xu and Jing Zhang and Jianfei Cai and Hamid Rezatofighi and Dacheng Tao},
+  journal={2022 IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)},
+  year={2021},
+  pages={8111-8120},
+  url={https://api.semanticscholar.org/CorpusID:244709323}
+}
+@inproceedings{animerun,
+ author = {Siyao, Li and Li, Yuhang and Li, Bo and Dong, Chao and Liu, Ziwei and Loy, Chen Change},
+ booktitle = {Advances in Neural Information Processing Systems},
+ editor = {S. Koyejo and S. Mohamed and A. Agarwal and D. Belgrave and K. Cho and A. Oh},
+ pages = {18996--19007},
+ publisher = {Curran Associates, Inc.},
+ title = {AnimeRun: 2D Animation Visual Correspondence from Open Source 3D Movies},
+ volume = {35},
+ year = {2022}
+}
+
+@INPROCEEDINGS {animeinterp,
+author = { Siyao, Li and Zhao, Shiyu and Yu, Weijiang and Sun, Wenxiu and Metaxas, Dimitris and Loy, Chen Change and Liu, Ziwei },
+booktitle = { 2021 IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) },
+title = {{ Deep Animation Video Interpolation in the Wild }},
+year = {2021},
+volume = {},
+ISSN = {},
+pages = {6583-6591},
+abstract = { In the animation industry, cartoon videos are usually produced at low frame rate since hand drawing of such frames is costly and time-consuming. Therefore, it is desirable to develop computational models that can automatically interpolate the in-between animation frames. However, existing video interpolation methods fail to produce satisfying results on animation data. Compared to natural videos, animation videos possess two unique characteristics that make frame interpolation difficult: 1) cartoons comprise lines and smooth color pieces. The smooth areas lack textures and make it difficult to estimate accurate motions on animation videos. 2) cartoons express stories via exaggeration. Some of the motions are non-linear and extremely large. In this work, we formally define and study the animation video interpolation problem for the first time. To address the aforementioned challenges, we propose an effective framework, AnimeInterp, with two dedicated modules in a coarse-to-fine manner. Specifically, 1) Segment-Guided Matching resolves the "lack of textures" challenge by exploiting global matching among color pieces that are piece-wise coherent. 2) Recurrent Flow Refinement resolves the "non-linear and extremely large motion" challenge by recur-rent predictions using a transformer-like architecture. To facilitate comprehensive training and evaluations, we build a large-scale animation triplet dataset, ATD-12K, which comprises 12,000 triplets with rich annotations. Extensive experiments demonstrate that our approach outperforms existing state-of-the-art interpolation methods for animation videos. Notably, AnimeInterp shows favorable perceptual quality and robustness for animation scenarios in the wild. The proposed dataset and code are available at https://github.com/lisiyao21/AnimeInterp/. },
+keywords = {Training;Interpolation;Image color analysis;Annotations;Animation;Transformers;Robustness},
+doi = {10.1109/CVPR46437.2021.00652},
+url = {https://doi.ieeecomputersociety.org/10.1109/CVPR46437.2021.00652},
+publisher = {IEEE Computer Society},
+address = {Los Alamitos, CA, USA},
+month =Jun}
+
+@article{linedrawingFlow,
+  title={Optical Flow Based Line Drawing Frame Interpolation Using Distance Transform to Support Inbetweenings},
+  author={Rei Narita and Keigo Hirakawa and Kiyoharu Aizawa},
+  journal={2019 IEEE International Conference on Image Processing (ICIP)},
+  year={2019},
+  pages={4200-4204},
+  url={https://api.semanticscholar.org/CorpusID:202777808}
+}
+
+@article{toonTracking,
+author = {Zhu, Haichao and Liu, Xueting and Wong, Tien-Tsin and Heng, Pheng-Ann},
+title = {Globally optimal toon tracking},
+year = {2016},
+issue_date = {July 2016},
+publisher = {Association for Computing Machinery},
+address = {New York, NY, USA},
+volume = {35},
+number = {4},
+issn = {0730-0301},
+url = {https://doi.org/10.1145/2897824.2925872},
+doi = {10.1145/2897824.2925872},
+abstract = {The ability to identify objects or region correspondences between consecutive frames of a given hand-drawn animation sequence is an indispensable tool for automating animation modification tasks such as sequence-wide recoloring or shape-editing of a specific animated character. Existing correspondence identification methods heavily rely on appearance features, but these features alone are insufficient to reliably identify region correspondences when there exist occlusions or when two or more objects share similar appearances. To resolve the above problems, manual assistance is often required. In this paper, we propose a new correspondence identification method which considers both appearance features and motions of regions in a global manner. We formulate correspondence likelihoods between temporal region pairs as a network flow graph problem which can be solved by a well-established optimization algorithm. We have evaluated our method with various animation sequences and results show that our method consistently outperforms the state-of-the-art methods without any user guidance.},
+journal = {ACM Trans. Graph.},
+month = jul,
+articleno = {75},
+numpages = {10},
+keywords = {region correspondence, toon tracking}
+}
+@article{superSloMo,
+  title={Super SloMo: High Quality Estimation of Multiple Intermediate Frames for Video Interpolation},
+  author={Huaizu Jiang and Deqing Sun and V. Jampani and Ming-Hsuan Yang and Erik G. Learned-Miller and Jan Kautz},
+  journal={2018 IEEE/CVF Conference on Computer Vision and Pattern Recognition},
+  year={2017},
+  pages={9000-9008},
+  url={https://api.semanticscholar.org/CorpusID:10817557}
+}
+@article{softmaxSplat,
+  title={Softmax Splatting for Video Frame Interpolation},
+  author={Simon Niklaus and Feng Liu},
+  journal={2020 IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)},
+  year={2020},
+  pages={5436-5445},
+  url={https://api.semanticscholar.org/CorpusID:212675709}
+}
+@article{craft,
+  title={CRAFT: Cross-Attentional Flow Transformer for Robust Optical Flow},
+  author={Xiuchao Sui and Shaohua Li and Xue Geng and Yan Wu and Xinxing Xu and Yong Liu and Rick Siow Mong Goh and Hongyuan Zhu},
+  journal={2022 IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)},
+  year={2022},
+  pages={17581-17590},
+  url={https://api.semanticscholar.org/CorpusID:247839366}
+}
+@inproceedings{skflow,
+author = {Sun, Shangkun and Chen, Yuanqi and Zhu, Yu and Guo, Guodong and Li, Ge},
+title = {SKFlow: learning optical flow with super kernels},
+year = {2022},
+isbn = {9781713871088},
+publisher = {Curran Associates Inc.},
+address = {Red Hook, NY, USA},
+abstract = {Optical flow estimation is a classical yet challenging task in computer vision. One of the essential factors in accurately predicting optical flow is to alleviate occlusions between frames. However, it is still a thorny problem for current top-performing optical flow estimation methods due to insufficient local evidence to model occluded areas. In this paper, we propose the Super Kernel Flow Network (SKFlow), a CNN architecture to ameliorate the impacts of occlusions on optical flow estimation. SKFlow benefits from the super kernels which bring enlarged receptive fields to complement the absent matching information and recover the occluded motions. We present efficient super kernel designs by utilizing conical connections and hybrid depth-wise convolutions. Extensive experiments demonstrate the effectiveness of SKFlow on multiple benchmarks, especially in the occluded areas. Without pre-trained backbones on ImageNet and with a modest increase in computation, SKFlow achieves compelling performance and ranks 1st among currently published methods on the Sintel benchmark. On the challenging Sintel clean and final passes (test), SKFlow surpasses the best-published result in the unmatched areas (7.96 and 12.50) by 9.09\% and 7.92\%.},
+booktitle = {Proceedings of the 36th International Conference on Neural Information Processing Systems},
+articleno = {822},
+numpages = {14},
+location = {New Orleans, LA, USA},
+series = {NIPS '22}
+}
+@inproceedings{flowformer,
+author = {Huang, Zhaoyang and Shi, Xiaoyu and Zhang, Chao and Wang, Qiang and Cheung, Ka Chun and Qin, Hongwei and Dai, Jifeng and Li, Hongsheng},
+title = {FlowFormer: A Transformer Architecture for Optical Flow},
+year = {2022},
+isbn = {978-3-031-19789-5},
+publisher = {Springer-Verlag},
+address = {Berlin, Heidelberg},
+doi = {10.1007/978-3-031-19790-1_40},
+abstract = {We introduce optical Flow transFormer, dubbed as FlowFormer, a transformer-based neural network architecture for learning optical flow. FlowFormer tokenizes the 4D cost volume built from an image pair, encodes the cost tokens into a cost memory with alternate-group transformer (AGT) layers in a novel latent space, and decodes the cost memory via a recurrent transformer decoder with dynamic positional cost queries. On the Sintel benchmark, FlowFormer achieves 1.144 and 2.183 average end-ponit-error (AEPE) on the clean and final pass, a 17.6\% and 11.6\% error reduction from the best published result (1.388 and 2.47). Besides, FlowFormer also achieves strong generalization performance. Without being trained on Sintel, FlowFormer achieves 0.95 AEPE on the Sintel training set clean pass, outperforming the best published result (1.29) by 26.9\%.},
+booktitle = {Computer Vision – ECCV 2022: 17th European Conference, Tel Aviv, Israel, October 23–27, 2022, Proceedings, Part XVII},
+pages = {668–685},
+numpages = {18},
+keywords = {Optical flow, Cost volume, Transformer, RAFT},
+location = {Tel Aviv, Israel}
+}
+@article{flowformerpp,
+  title={FlowFormer++: Masked Cost Volume Autoencoding for Pretraining Optical Flow Estimation},
+  author={Xiaoyu Shi and Zhaoyang Huang and Dasong Li and Manyuan Zhang and Ka Chun Cheung and S. See and Hongwei Qin and Jifeng Dai and Hongsheng Li},
+  journal={2023 IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)},
+  year={2023},
+  pages={1599-1610},
+  url={https://api.semanticscholar.org/CorpusID:257280104}
+}
+@inproceedings{videoflow2023,
+author = {Shi, Xiaoyu and Huang, Zhaoyang and Bian, Weikang and Li, Dasong and Zhang, Manyuan and Cheung, Ka and See, Simon and Qin, Hongwei and Dai, Jifeng and Li, Hongsheng},
+year = {2023},
+month = {10},
+pages = {12435-12446},
+title = {VideoFlow: Exploiting Temporal Cues for Multi-frame Optical Flow Estimation},
+doi = {10.1109/ICCV51070.2023.01146}
+}
+@INPROCEEDINGS {dosovitskiy2015flownet,
+author = { Dosovitskiy, Alexey and Fischer, Philipp and Ilg, Eddy and Hausser, Philip and Hazirbas, Caner and Golkov, Vladimir and Smagt, Patrick van der and Cremers, Daniel and Brox, Thomas },
+booktitle = { 2015 IEEE International Conference on Computer Vision (ICCV) },
+title = {{ FlowNet: Learning Optical Flow with Convolutional Networks }},
+year = {2015},
+volume = {},
+ISSN = {2380-7504},
+pages = {2758-2766},
+abstract = { Convolutional neural networks (CNNs) have recently been very successful in a variety of computer vision tasks, especially on those linked to recognition. Optical flow estimation has not been among the tasks CNNs succeeded at. In this paper we construct CNNs which are capable of solving the optical flow estimation problem as a supervised learning task. We propose and compare two architectures: a generic architecture and another one including a layer that correlates feature vectors at different image locations. Since existing ground truth data sets are not sufficiently large to train a CNN, we generate a large synthetic Flying Chairs dataset. We show that networks trained on this unrealistic data still generalize very well to existing datasets such as Sintel and KITTI, achieving competitive accuracy at frame rates of 5 to 10 fps. },
+keywords = {Optical imaging;Computer architecture;Image resolution;Correlation;Optical fiber networks;Neural networks;Optical computing},
+doi = {10.1109/ICCV.2015.316},
+url = {https://doi.ieeecomputersociety.org/10.1109/ICCV.2015.316},
+publisher = {IEEE Computer Society},
+address = {Los Alamitos, CA, USA},
+month =Dec}
+@article{ilg2017flownet2,
+  title={FlowNet 2.0: Evolution of Optical Flow Estimation with Deep Networks},
+  author={Eddy Ilg and Nikolaus Mayer and Tonmoy Saikia and Margret Keuper and Alexey Dosovitskiy and Thomas Brox},
+  journal={2017 IEEE Conference on Computer Vision and Pattern Recognition (CVPR)},
+  year={2016},
+  pages={1647-1655},
+  url={https://api.semanticscholar.org/CorpusID:3759573}
+}
+@INPROCEEDINGS {hui2018liteflownet,
+author = { Hui, Tak-Wai and Tang, Xiaoou and Loy, Chen Change },
+booktitle = { 2018 IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) },
+title = {{ LiteFlowNet: A Lightweight Convolutional Neural Network for Optical Flow Estimation }},
+year = {2018},
+volume = {},
+ISSN = {},
+pages = {8981-8989},
+abstract = { FlowNet2 [14], the state-of-the-art convolutional neural network (CNN) for optical flow estimation, requires over 160M parameters to achieve accurate flow estimation. In this paper we present an alternative network that attains performance on par with FlowNet2 on the challenging Sintel final pass and KITTI benchmarks, while being 30 times smaller in the model size and 1.36 times faster in the running speed. This is made possible by drilling down to architectural details that might have been missed in the current frameworks: (1) We present a more effective flow inference approach at each pyramid level through a lightweight cascaded network. It not only improves flow estimation accuracy through early correction, but also permits seamless incorporation of descriptor matching in our network. (2) We present a novel flow regularization layer to ameliorate the issue of outliers and vague flow boundaries by using a feature-driven local convolution. (3) Our network owns an effective structure for pyramidal feature extraction and embraces feature warping rather than image warping as practiced in FlowNet2. Our code and trained models are available at github.com/twhui/LiteFlowNet. },
+keywords = {Estimation;Optical imaging;Feature extraction;Convolution;Adaptive optics;Optical filters;Optical fiber networks},
+doi = {10.1109/CVPR.2018.00936},
+url = {https://doi.ieeecomputersociety.org/10.1109/CVPR.2018.00936},
+publisher = {IEEE Computer Society},
+address = {Los Alamitos, CA, USA},
+month =Jun}
+@inproceedings{upflow,
+author = {Luo, Kunming and Wang, Chuan and Liu, Shuaicheng and Fan, Haoqiang and Wang, Jue and Sun, Jian},
+year = {2021},
+month = {06},
+pages = {1045-1054},
+title = {UPFlow: Upsampling Pyramid for Unsupervised Optical Flow Learning},
+doi = {10.1109/CVPR46437.2021.00110}
+}
+@inproceedings{oauflow,
+author = {Wang, Yang and Yang, Yi and Yang, Zhenheng and Zhao, Liang and Wang, Peng and Xu, Wei},
+year = {2018},
+month = {06},
+pages = {4884-4893},
+title = {Occlusion Aware Unsupervised Learning of Optical Flow},
+doi = {10.1109/CVPR.2018.00513}
+}
+@article{asflow,
+author = {Liu, Shuaicheng and Luo, Kunming and Luo, Ao and Wang, Chuan and Meng, Fanman and Zeng, Bing},
+title = {ASFlow: Unsupervised Optical Flow Learning With Adaptive Pyramid Sampling},
+year = {2022},
+issue_date = {July 2022},
+publisher = {IEEE Press},
+volume = {32},
+number = {7},
+issn = {1051-8215},
+url = {https://doi.org/10.1109/TCSVT.2021.3130281},
+doi = {10.1109/TCSVT.2021.3130281},
+abstract = {We present an unsupervised optical flow estimation method by proposing an adaptive pyramid sampling in the deep pyramid network. Specifically, in the pyramid downsampling, we propose a Content-Aware Pooling (CAP) module, which promotes local feature gathering by avoiding cross region pooling, so that the learned features become more representative. In the pyramid upsampling, we propose an Adaptive Flow Upsampling (AFU) module, where cross edge interpolation can be avoided, producing sharp motion boundaries. Equipped with these two modules, our method achieves the best performance for unsupervised optical flow estimation on multiple leading benchmarks, including MPI-Sintel, KITTI 2012 and KITTI 2015. Particularly, we achieve EPE=1.5 on KITTI 2012 and F1=9.67% KITTI 2015, which outperform the previous state-of-the-art methods by 16.7% and 13.1%, respectively.},
+journal = {IEEE Trans. Cir. and Sys. for Video Technol.},
+month = jul,
+pages = {4282–4295},
+numpages = {14}
+}
+@INPROCEEDINGS {smurf,
+author = { Stone, Austin and Maurer, Daniel and Ayvaci, Alper and Angelova, Anelia and Jonschkowski, Rico },
+booktitle = { 2021 IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) },
+title = {{ SMURF: Self-Teaching Multi-Frame Unsupervised RAFT with Full-Image Warping }},
+year = {2021},
+volume = {},
+ISSN = {},
+pages = {3886-3895},
+abstract = { We present SMURF, a method for unsupervised learning of optical flow that improves state of the art on all benchmarks by 36% to 40% (over the prior best method UFlow) and even outperforms several supervised approaches such as PWC-Net and FlowNet2. Our method integrates architecture improvements from supervised optical flow, i.e. the RAFT model, with new ideas for unsupervised learning that include a sequence-aware self-supervision loss, a technique for handling out-of-frame motion, and an approach for learning effectively from multi-frame video data while still only requiring two frames for inference. },
+keywords = {Optical losses;Computer vision;Computational modeling;Estimation;Computer architecture;Benchmark testing;Data models},
+doi = {10.1109/CVPR46437.2021.00388},
+url = {https://doi.ieeecomputersociety.org/10.1109/CVPR46437.2021.00388},
+publisher = {IEEE Computer Society},
+address = {Los Alamitos, CA, USA},
+month =Jun}
+@misc{flowda,
+      title={FlowDA: Unsupervised Domain Adaptive Framework for Optical Flow Estimation}, 
+      author={Miaojie Feng and Longliang Liu and Hao Jia and Gangwei Xu and Xin Yang},
+      year={2023},
+      eprint={2312.16995},
+      archivePrefix={arXiv},
+      primaryClass={cs.CV},
+      url={https://arxiv.org/abs/2312.16995}, 
+}
+@article{unflow,
+author = {Meister, Simon and Hur, Junhwa and Roth, Stefan},
+year = {2017},
+month = {11},
+pages = {},
+title = {UnFlow: Unsupervised Learning of Optical Flow With a Bidirectional Census Loss},
+volume = {32},
+journal = {Proceedings of the AAAI Conference on Artificial Intelligence},
+doi = {10.1609/aaai.v32i1.12276}
+}
+@inproceedings{unsupFlow2,
+author = {Ren, Zhe and Yan, Junchi and Ni, Bingbing and Liu, Bin and Yang, Xiaokang and Zha, Hongyuan},
+year = {2017},
+month = {02},
+pages = {},
+title = {Unsupervised Deep Learning for Optical Flow Estimation}
+}
+@inproceedings{ddflow,
+author = {Liu, Pengpeng and King, Irwin and Lyu, Michael R. and Xu, Jia},
+title = {DDFlow: learning optical flow with unlabeled data distillation},
+year = {2019},
+isbn = {978-1-57735-809-1},
+publisher = {AAAI Press},
+url = {https://doi.org/10.1609/aaai.v33i01.33018770},
+doi = {10.1609/aaai.v33i01.33018770},
+abstract = {We present DDFlow, a data distillation approach to learning optical flow estimation from unlabeled data. The approach distills reliable predictions from a teacher network, and uses these predictions as annotations to guide a student network to learn optical flow. Unlike existing work relying on handcrafted energy terms to handle occlusion, our approach is data-driven, and learns optical flow for occluded pixels. This enables us to train our model with a much simpler loss function, and achieve a much higher accuracy. We conduct a rigorous evaluation on the challenging Flying Chairs, MPI Sintel, KITTI 2012 and 2015 benchmarks, and show that our approach significantly outperforms all existing unsupervised learning methods, while running at real time.},
+booktitle = {Proceedings of the Thirty-Third AAAI Conference on Artificial Intelligence and Thirty-First Innovative Applications of Artificial Intelligence Conference and Ninth AAAI Symposium on Educational Advances in Artificial Intelligence},
+articleno = {1076},
+numpages = {8},
+location = {Honolulu, Hawaii, USA},
+series = {AAAI'19/IAAI'19/EAAI'19}
+}
+@article{mdflow,
+  title={MDFlow: Unsupervised Optical Flow Learning by Reliable Mutual Knowledge Distillation},
+  author={Lingtong Kong and J. Yang},
+  journal={IEEE Transactions on Circuits and Systems for Video Technology},
+  year={2022},
+  volume={33},
+  pages={677-688},
+  url={https://api.semanticscholar.org/CorpusID:252253907}
+}
+@misc{unsamflow,
+      title={UnSAMFlow: Unsupervised Optical Flow Guided by Segment Anything Model}, 
+      author={Shuai Yuan and Lei Luo and Zhuo Hui and Can Pu and Xiaoyu Xiang and Rakesh Ranjan and Denis Demandolx},
+      year={2024},
+      eprint={2405.02608},
+      archivePrefix={arXiv},
+      primaryClass={cs.CV},
+      url={https://arxiv.org/abs/2405.02608}, 
+}
+@ARTICLE{wang1994representing,
+  author={Wang, J.Y.A. and Adelson, E.H.},
+  journal={IEEE Transactions on Image Processing}, 
+  title={Representing moving images with layers}, 
+  year={1994},
+  volume={3},
+  number={5},
+  pages={625-638},
+  keywords={Image coding;Image sequences;Animation;Computer graphics;Laboratories;Additives;Motion analysis;Decoding;Image processing;Machine vision},
+  doi={10.1109/83.334981}}
+@article{sevillalara2016optical,
+  title={Optical Flow with Semantic Segmentation and Localized Layers},
+  author={Laura Sevilla-Lara and Deqing Sun and V. Jampani and Michael J. Black},
+  journal={2016 IEEE Conference on Computer Vision and Pattern Recognition (CVPR)},
+  year={2016},
+  pages={3889-3898},
+  url={https://api.semanticscholar.org/CorpusID:12168077}
+}
+@article{sam,
+  title={Segment Anything},
+  author={Kirillov, Alexander and Mintun, Eric and Ravi, Nikhila and Mao, Hanzi and Rolland, Chloe and Gustafson, Laura and Xiao, Tete and Whitehead, Spencer and Berg, Alexander C. and Lo, Wan-Yen and Doll{\'a}r, Piotr and Girshick, Ross},
+  journal={arXiv:2304.02643},
+  year={2023}
+}
+@article{ravi2024sam2,
+  title={SAM 2: Segment Anything in Images and Videos},
+  author={Ravi, Nikhila and Gabeur, Valentin and Hu, Yuan-Ting and Hu, Ronghang and Ryali, Chaitanya and Ma, Tengyu and Khedr, Haitham and R{\"a}dle, Roman and Rolland, Chloe and Gustafson, Laura and Mintun, Eric and Pan, Junting and Alwala, Kalyan Vasudev and Carion, Nicolas and Wu, Chao-Yuan and Girshick, Ross and Doll{\'a}r, Piotr and Feichtenhofer, Christoph},
+  journal={arXiv preprint arXiv:2408.00714},
+  url={https://arxiv.org/abs/2408.00714},
+  year={2024}
+}
+@inproceedings{vaswani2017attention,
+  title={Attention Is All You Need},
+  author={Vaswani, Ashish and Shazeer, Noam and Parmar, Niki and Uszkoreit, Jakob and Jones, Llion and Gomez, Aidan N. and Kaiser, Lukasz and Polosukhin, Illia},
+  booktitle={Advances in Neural Information Processing Systems (NeurIPS)},
+  year={2017}
+}

@@ -1,0 +1,39 @@
+{
+  "config_path": "/home/serverai/ltdoanh/AniUnFlow/workspaces/v5_1_object_memory_dense_parallel_v4/config.yaml",
+  "checkpoint_path": "/home/serverai/ltdoanh/AniUnFlow/workspaces/v5_1_object_memory_dense_parallel_v4/best.pth",
+  "scene": "cami_02_05_A",
+  "centers": [
+    2,
+    31,
+    43
+  ],
+  "records": [
+    {
+      "scene": "cami_02_05_A",
+      "center": 2,
+      "frame": "0277",
+      "panel_path": "demo/v5_1_object_memory_dense_parallel_v4_paper/panels/cami_02_05_A_center_0002_0277.png",
+      "mean_epe": 16.5092830657959,
+      "mean_gt_motion": 17.113079071044922,
+      "rad_max": 17.578213201293945
+    },
+    {
+      "scene": "cami_02_05_A",
+      "center": 31,
+      "frame": "0306",
+      "panel_path": "demo/v5_1_object_memory_dense_parallel_v4_paper/panels/cami_02_05_A_center_0031_0306.png",
+      "mean_epe": 199.3568572998047,
+      "mean_gt_motion": 200.3447265625,
+      "rad_max": 281.06101463867185
+    },
+    {
+      "scene": "cami_02_05_A",
+      "center": 43,
+      "frame": "0318",
+      "panel_path": "demo/v5_1_object_memory_dense_parallel_v4_paper/panels/cami_02_05_A_center_0043_0318.png",
+      "mean_epe": 13.000181198120117,
+      "mean_gt_motion": 12.899433135986328,
+      "rad_max": 14.060097203979492
+    }
+  ]
+}

@@ -88,13 +88,18 @@ Two large unsupervised directions now live side by side:
 - `V4 Hybrid SAM`: dense token matching first, SAM guidance and iterative refinement second.
 - `V5 Object Memory`: SAM object slots first, affine/layered object motion first, dense residual correction second.
 - `V5.1 Object Memory Dense`: V5 object memory plus dense correlation and multi-scale dense refinement for large motion.
+- `V5.2 Object Memory Global`: V5.1 plus a lightweight coarse global matcher borrowed from the V6 analysis, without V6's heavier visibility and non-rigid branches.
+- `V6 Global Slot Search`: object memory plus non-rigid slot flow, coarse global large-motion search, visibility-aware compositing, and staged dense refinement.
 
 V5 documentation:
 
 - [docs/architecture_v5_object_memory.md](docs/architecture_v5_object_memory.md)
 - [docs/architecture_v5_1_object_memory_dense.md](docs/architecture_v5_1_object_memory_dense.md)
+- [docs/architecture_v5_2_object_memory_global.md](docs/architecture_v5_2_object_memory_global.md)
+- [docs/architecture_v6_global_slot_search.md](docs/architecture_v6_global_slot_search.md)
 - Main config: `configs/v5_object_memory_sam_parallel.yaml`
 - Dense follow-up config: `configs/v5_1_object_memory_dense_parallel.yaml`
+- V6 main config: `configs/v6_global_slot_search_parallel.yaml`
 
 ```bash
 # Train V5 object-memory branch
@@ -102,6 +107,17 @@ python scripts/train_unsup_animerun.py --config configs/v5_object_memory_sam_par
 
 # Train V5.1 object-memory dense branch
 python scripts/train_unsup_animerun.py --config configs/v5_1_object_memory_dense_parallel.yaml
+
+# Train V5.2 object-memory global branch
+python scripts/train_unsup_animerun.py --config configs/v5_2_object_memory_global.yaml
+
+# Train V6 global-slot-search branch
+python scripts/train_unsup_animerun.py --config configs/v6_global_slot_search_parallel.yaml
+
+# Fine-tune V6 from a saved best checkpoint
+python scripts/train_unsup_animerun.py \
+  --config configs/v6_global_slot_search_finetune.yaml \
+  --resume workspaces/v6_global_slot_search_parallel/best.pth
 
 # Collect comparable CSV + Markdown reports
 python scripts/collect_animerun_results.py
@@ -112,3 +128,10 @@ V5 ablations:
 - `configs/v5_object_memory_sam_no_layer_order.yaml`
 - `configs/v5_object_memory_sam_no_temporal_memory.yaml`
 - `configs/v5_object_memory_sam_affine_only.yaml`
+
+V6 ablations:
+
+- `configs/v6_no_global_search.yaml`
+- `configs/v6_affine_only_slots.yaml`
+- `configs/v6_no_visibility_compositing.yaml`
+- `configs/v6_no_hard_motion_reweight.yaml`

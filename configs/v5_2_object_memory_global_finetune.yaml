@@ -1,5 +1,5 @@
 seed: 1337
-workspace: workspaces/v5_1_object_memory_dense_parallel
+workspace: workspaces/v5_2_object_memory_global_ft
 
 data:
   name: animerun_clip
@@ -7,7 +7,7 @@ data:
   val_root: data/AnimeRun_v2/
   T: 5
   stride_min: 1
-  stride_max: 3
+  stride_max: 2
   crop_size: [256, 512]
   resize: true
   keep_aspect: false
@@ -29,7 +29,7 @@ data:
 
 model:
   name: AniFlowFormerTV5
-  backbone: v5_1_object_memory_dense
+  backbone: v5_2_object_memory_global
   enc_channels: 40
   slot_dim: 160
   slot_hidden_dim: 256
@@ -40,14 +40,19 @@ model:
   overlap_prior_weight: 3.0
   use_long_gap_matching: true
   predict_layer_order: true
+  global_match_dim: 96
+  global_downsample_factor: 2
+  global_softmax_temperature: 0.07
+  global_update_scale: 0.60
+  global_confidence_floor: 0.03
   dense_match_hidden_dim: 160
   dense_match_radius_l2: 6
   dense_match_radius_l1: 4
   dense_delta_scale_l2: 8.0
   dense_delta_scale_l1: 4.5
-  dense_prior_mix: 0.40
-  dense_update_scale_l2: 0.45
-  dense_update_scale_l1: 0.20
+  dense_prior_mix: 0.35
+  dense_update_scale_l2: 0.42
+  dense_update_scale_l1: 0.18
   dense_confidence_floor: 0.02
   residual_hidden_dim: 128
   residual_blocks: 4
@@ -79,41 +84,40 @@ loss:
   occ_aware_start_epoch: 5
   segment_warp: 0.25
   slot_photo: 0.20
+  global_photo: 0.12
   piecewise_residual: 0.05
   segment_cycle: 0.05
   layered_order: 0.01
   boundary_residual: 0.018
-  dense_slot_consistency: 0.20
-  long_gap_photo_weight: 0.06
-  long_gap_consistency_weight: 0.02
-  long_gap_start_epoch: 14
-  long_gap_ramp_epochs: 6
+  dense_slot_consistency: 0.22
+  global_dense_consistency: 0.10
+  long_gap_photo_weight: 0.04
+  long_gap_consistency_weight: 0.015
+  long_gap_start_epoch: 24
+  long_gap_ramp_epochs: 4
 
 optim:
-  lr: 3.0e-5
+  lr: 8.0e-6
   weight_decay: 1.0e-4
-  epochs: 60
-  warmup_epochs: 4
+  epochs: 32
+  warmup_epochs: 0
   clip: 0.6
   accum_steps: 2
   freeze_encoder_epoch: 0
   scheduler:
-    type: onecycle
-    max_lr: 4.8e-5
-    pct_start: 0.08
-    div_factor: 10.0
-    final_div_factor: 1000.0
-    anneal_strategy: cos
+    type: cosine
+    min_lr: 1.0e-6
+    per_batch: false
 
 logging:
   use_tb: true
-  tb_dir: tb_v5_1_object_memory_dense_parallel
+  tb_dir: tb_v5_2_object_memory_global_finetune
   log_every: 100
 
 validation:
-  every_n_epochs: 4
-  early_stop_delta: 0.5
-  early_stop_patience: 6
+  every_n_epochs: 1
+  early_stop_delta: 0.3
+  early_stop_patience: 4
 
 teacher:
   enabled: true
@@ -128,21 +132,12 @@ runtime:
   nan_guard_flow_clip: 500.0
   schedule:
     - start_epoch: 1
-      end_epoch: 6
+      end_epoch: 12
       stride_min: 1
       stride_max: 1
       enable_occ_aware: false
       enable_long_gap: false
       enable_residual_branch: false
-      enable_segment_cycle: false
-      enable_layered_order: false
-    - start_epoch: 7
-      end_epoch: 12
-      stride_min: 1
-      stride_max: 1
-      enable_occ_aware: true
-      enable_long_gap: false
-      enable_residual_branch: true
       enable_segment_cycle: false
       enable_layered_order: false
     - start_epoch: 13
@@ -155,7 +150,7 @@ runtime:
       enable_segment_cycle: false
       enable_layered_order: false
     - start_epoch: 25
-      end_epoch: 40
+      end_epoch: 32
       stride_min: 1
       stride_max: 2
       enable_occ_aware: true
@@ -163,17 +158,8 @@ runtime:
       enable_residual_branch: true
       enable_segment_cycle: true
       enable_layered_order: true
-    - start_epoch: 41
-      end_epoch: 60
-      stride_min: 1
-      stride_max: 3
-      enable_occ_aware: true
-      enable_long_gap: true
-      enable_residual_branch: true
-      enable_segment_cycle: true
-      enable_layered_order: true
 
 ckpt:
-  save_every: 5
+  save_every: 2
   keep_last: 3
   save_best: true

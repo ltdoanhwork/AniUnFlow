@@ -1,5 +1,5 @@
 seed: 1337
-workspace: workspaces/v5_1_object_memory_dense_parallel
+workspace: workspaces/v6_global_slot_search_parallel
 
 data:
   name: animerun_clip
@@ -17,7 +17,7 @@ data:
   val_load_sam_masks: true
   val_sam_mask_dir: data/AnimeRun_v2/SAM_Masks_v2
   val_sam_mask_cache_size: 1024
-  batch_size: 8
+  batch_size: 6
   num_workers: 8
   persistent_workers: true
   prefetch_factor: 6
@@ -28,8 +28,8 @@ data:
   drop_last: true
 
 model:
-  name: AniFlowFormerTV5
-  backbone: v5_1_object_memory_dense
+  name: AniFlowFormerTV6
+  backbone: v6_global_slot_search
   enc_channels: 40
   slot_dim: 160
   slot_hidden_dim: 256
@@ -40,15 +40,26 @@ model:
   overlap_prior_weight: 3.0
   use_long_gap_matching: true
   predict_layer_order: true
+  slot_basis_count: 4
+  slot_basis_scale: 0.18
+  slot_affine_scale: 0.25
+  global_match_dim: 96
+  global_downsample_factor: 2
+  global_softmax_temperature: 0.07
+  global_update_scale: 1.0
+  global_confidence_floor: 0.04
   dense_match_hidden_dim: 160
   dense_match_radius_l2: 6
   dense_match_radius_l1: 4
   dense_delta_scale_l2: 8.0
   dense_delta_scale_l1: 4.5
-  dense_prior_mix: 0.40
+  dense_prior_mix: 0.35
   dense_update_scale_l2: 0.45
   dense_update_scale_l1: 0.20
   dense_confidence_floor: 0.02
+  visibility_hidden_dim: 128
+  visibility_confidence_floor: 0.10
+  occlusion_hidden_dim: 96
   residual_hidden_dim: 128
   residual_blocks: 4
   residual_boundary_scale: 0.75
@@ -74,23 +85,27 @@ loss:
   consistency: 0.02
   mag_reg: 0.05
   min_flow_mag: 0.5
-  warmup_steps: 1200
+  warmup_steps: 1500
   disable_occ_during_warmup: true
   occ_aware_start_epoch: 5
-  segment_warp: 0.25
-  slot_photo: 0.20
-  piecewise_residual: 0.05
-  segment_cycle: 0.05
-  layered_order: 0.01
+  segment_warp: 0.20
+  dense_slot_consistency: 0.18
   boundary_residual: 0.018
-  dense_slot_consistency: 0.20
-  long_gap_photo_weight: 0.06
+  segment_cycle: 0.05
+  global_photo: 0.15
+  global_fused_consistency: 0.08
+  visibility_consistency: 0.06
+  occlusion_composite: 0.05
+  slot_deformation_reg: 0.02
+  hard_motion_reweight: 0.06
+  slot_photo: 0.15
+  long_gap_photo_weight: 0.05
   long_gap_consistency_weight: 0.02
-  long_gap_start_epoch: 14
+  long_gap_start_epoch: 22
   long_gap_ramp_epochs: 6
 
 optim:
-  lr: 3.0e-5
+  lr: 2.5e-5
   weight_decay: 1.0e-4
   epochs: 60
   warmup_epochs: 4
@@ -99,26 +114,26 @@ optim:
   freeze_encoder_epoch: 0
   scheduler:
     type: onecycle
-    max_lr: 4.8e-5
-    pct_start: 0.08
+    max_lr: 4.0e-5
+    pct_start: 0.10
     div_factor: 10.0
     final_div_factor: 1000.0
     anneal_strategy: cos
 
 logging:
   use_tb: true
-  tb_dir: tb_v5_1_object_memory_dense_parallel
+  tb_dir: tb_v6_global_slot_search_parallel
   log_every: 100
 
 validation:
-  every_n_epochs: 4
-  early_stop_delta: 0.5
+  every_n_epochs: 2
+  early_stop_delta: 0.4
   early_stop_patience: 6
 
 teacher:
   enabled: true
   ema_decay: 0.999
-  start_step: 1800
+  start_step: 2200
   distill_weight: 0.06
   confidence_threshold: 0.7
   every_n_steps: 4
@@ -136,17 +151,25 @@ runtime:
       enable_residual_branch: false
       enable_segment_cycle: false
       enable_layered_order: false
+      enable_global_matcher: false
+      enable_local_refine: false
+      enable_visibility_composite: false
+      enable_hard_motion_reweight: false
     - start_epoch: 7
       end_epoch: 12
       stride_min: 1
       stride_max: 1
       enable_occ_aware: true
       enable_long_gap: false
-      enable_residual_branch: true
+      enable_residual_branch: false
       enable_segment_cycle: false
       enable_layered_order: false
+      enable_global_matcher: true
+      enable_local_refine: false
+      enable_visibility_composite: false
+      enable_hard_motion_reweight: false
     - start_epoch: 13
-      end_epoch: 24
+      end_epoch: 22
       stride_min: 1
       stride_max: 2
       enable_occ_aware: true
@@ -154,7 +177,11 @@ runtime:
       enable_residual_branch: true
       enable_segment_cycle: false
       enable_layered_order: false
-    - start_epoch: 25
+      enable_global_matcher: true
+      enable_local_refine: true
+      enable_visibility_composite: false
+      enable_hard_motion_reweight: false
+    - start_epoch: 23
       end_epoch: 40
       stride_min: 1
       stride_max: 2
@@ -163,6 +190,10 @@ runtime:
       enable_residual_branch: true
       enable_segment_cycle: true
       enable_layered_order: true
+      enable_global_matcher: true
+      enable_local_refine: true
+      enable_visibility_composite: true
+      enable_hard_motion_reweight: false
     - start_epoch: 41
       end_epoch: 60
       stride_min: 1
@@ -172,6 +203,10 @@ runtime:
       enable_residual_branch: true
       enable_segment_cycle: true
       enable_layered_order: true
+      enable_global_matcher: true
+      enable_local_refine: true
+      enable_visibility_composite: true
+      enable_hard_motion_reweight: true
 
 ckpt:
   save_every: 5

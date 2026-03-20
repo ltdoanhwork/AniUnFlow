@@ -13,7 +13,7 @@ from models.aniunflow_v4.fusion import ContextFusionModule
 from models.aniunflow_v4.losses import compute_boundary_map
 from models.aniunflow_v4.sam_encoder import SAMEncoderWrapper
 
-from .config import V5Config
+from .config import V6Config
 
 
 def resize_flow(flow: torch.Tensor, size: Tuple[int, int]) -> torch.Tensor:
@@ -30,7 +30,7 @@ def resize_flow(flow: torch.Tensor, size: Tuple[int, int]) -> torch.Tensor:
 class ResidualFlowRefiner(nn.Module):
     def __init__(self, feat_dim: int, hidden_dim: int, num_blocks: int):
         super().__init__()
-        in_dim = feat_dim * 2 + 4
+        in_dim = feat_dim * 2 + 5
         layers: List[nn.Module] = [
             nn.Conv2d(in_dim, hidden_dim, 3, padding=1),
             nn.GroupNorm(8, hidden_dim),
@@ -54,13 +54,16 @@ class ResidualFlowRefiner(nn.Module):
         coarse_flow: torch.Tensor,
         boundary: torch.Tensor,
         conf_map: torch.Tensor,
+        occ_map: torch.Tensor,
     ) -> torch.Tensor:
         if boundary.shape[-2:] != feat_a.shape[-2:]:
             boundary = F.interpolate(boundary, size=feat_a.shape[-2:], mode="nearest")
         if conf_map.shape[-2:] != feat_a.shape[-2:]:
             conf_map = F.interpolate(conf_map, size=feat_a.shape[-2:], mode="nearest")
+        if occ_map.shape[-2:] != feat_a.shape[-2:]:
+            occ_map = F.interpolate(occ_map, size=feat_a.shape[-2:], mode="nearest")
         coarse_flow = resize_flow(coarse_flow, feat_a.shape[-2:])
-        x = torch.cat([feat_a, feat_b, coarse_flow, boundary, conf_map], dim=1)
+        x = torch.cat([feat_a, feat_b, coarse_flow, boundary, conf_map, occ_map], dim=1)
         return self.flow_head(self.body(x))
 
 
@@ -159,21 +162,37 @@ class GlobalCorrelationMatcher(nn.Module):
         return flow, conf
 
 
-class AniFlowFormerTV5(nn.Module):
-    def __init__(self, config: V5Config | dict | None = None):
+class OcclusionPredictor(nn.Module):
+    def __init__(self, feat_dim: int, hidden_dim: int):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Conv2d(feat_dim * 2 + 3, hidden_dim, 3, padding=1),
+            nn.GroupNorm(8, hidden_dim),
+            nn.GELU(),
+            nn.Conv2d(hidden_dim, hidden_dim, 3, padding=1),
+            nn.GroupNorm(8, hidden_dim),
+            nn.GELU(),
+            nn.Conv2d(hidden_dim, 1, 3, padding=1),
+        )
+
+    def forward(self, feat_a: torch.Tensor, feat_b: torch.Tensor, flow: torch.Tensor, vis_map: torch.Tensor) -> torch.Tensor:
+        if vis_map.shape[-2:] != feat_a.shape[-2:]:
+            vis_map = F.interpolate(vis_map, size=feat_a.shape[-2:], mode="nearest")
+        flow = resize_flow(flow, feat_a.shape[-2:])
+        return torch.sigmoid(self.net(torch.cat([feat_a, feat_b, flow, vis_map], dim=1)))
+
+
+class AniFlowFormerTV6(nn.Module):
+    def __init__(self, config: V6Config | dict | None = None):
         super().__init__()
         if config is None:
-            config = V5Config()
+            config = V6Config()
         elif isinstance(config, dict):
-            config = V5Config.from_dict(config)
+            config = V6Config.from_dict(config)
 
         self.config = config
         self.model_cfg = config.model
         self.sam_cfg = config.sam
-        self.backbone = str(self.model_cfg.backbone).lower()
-        self.use_dense_correlation = self.backbone.startswith("v5_1") or "dense" in self.backbone
-        self.use_global_matcher = self.backbone.startswith("v5_2") or "global" in self.backbone
-        self.use_deformable_slots = self.backbone.startswith("v5_3") or "deform" in self.backbone
 
         c = self.model_cfg.enc_channels
         d = self.model_cfg.slot_dim
@@ -195,64 +214,35 @@ class AniFlowFormerTV5(nn.Module):
                 batch_first=True,
                 activation="gelu",
             )
-            self.temporal_memory = nn.TransformerEncoder(
-                encoder_layer,
-                num_layers=self.model_cfg.temporal_memory_depth,
-            )
+            self.temporal_memory = nn.TransformerEncoder(encoder_layer, num_layers=self.model_cfg.temporal_memory_depth)
         else:
             self.temporal_memory = nn.Identity()
         self.max_frames = 8
         self.time_embed = nn.Parameter(torch.randn(1, self.max_frames, 1, d) * 0.02)
         self.slot_embed = nn.Parameter(torch.randn(1, 1, self.model_cfg.num_slots, d) * 0.02)
 
-        motion_out_dim = 6 + (2 * self.model_cfg.slot_basis_count if self.use_deformable_slots else 0)
+        basis_out_dim = 6 + 2 * self.model_cfg.slot_basis_count
         self.motion_head = nn.Sequential(
             nn.Linear(d * 2, self.model_cfg.slot_hidden_dim),
             nn.GELU(),
-            nn.Linear(self.model_cfg.slot_hidden_dim, motion_out_dim),
+            nn.Linear(self.model_cfg.slot_hidden_dim, basis_out_dim),
+        )
+        self.visibility_head = nn.Sequential(
+            nn.Linear(d * 2, self.model_cfg.slot_hidden_dim),
+            nn.GELU(),
+            nn.Linear(self.model_cfg.slot_hidden_dim, 1),
         )
         self.order_head = nn.Sequential(
             nn.Linear(d * 2, self.model_cfg.slot_hidden_dim),
             nn.GELU(),
             nn.Linear(self.model_cfg.slot_hidden_dim, 1),
         )
-        self.occ_head = nn.Sequential(
-            nn.Linear(d * 2, self.model_cfg.slot_hidden_dim),
-            nn.GELU(),
-            nn.Linear(self.model_cfg.slot_hidden_dim, 1),
-        )
 
-        if self.use_dense_correlation:
-            self.l2_matcher = LocalCorrelationMatcher(
-                feat_dim=c * 2,
-                hidden_dim=self.model_cfg.dense_match_hidden_dim,
-                radius=self.model_cfg.dense_match_radius_l2,
-                delta_scale=self.model_cfg.dense_delta_scale_l2,
-            )
-            self.l1_matcher = LocalCorrelationMatcher(
-                feat_dim=c,
-                hidden_dim=self.model_cfg.dense_match_hidden_dim,
-                radius=self.model_cfg.dense_match_radius_l1,
-                delta_scale=self.model_cfg.dense_delta_scale_l1,
-            )
-        else:
-            self.l2_matcher = None
-            self.l1_matcher = None
-
-        if self.use_global_matcher:
-            self.global_matcher = GlobalCorrelationMatcher(
-                feat_dim=c * 2,
-                proj_dim=self.model_cfg.global_match_dim,
-                temperature=self.model_cfg.global_softmax_temperature,
-            )
-        else:
-            self.global_matcher = None
-
-        self.residual_refiner = ResidualFlowRefiner(
-            feat_dim=c,
-            hidden_dim=self.model_cfg.residual_hidden_dim,
-            num_blocks=self.model_cfg.residual_blocks,
-        )
+        self.global_matcher = GlobalCorrelationMatcher(c * 2, self.model_cfg.global_match_dim, self.model_cfg.global_softmax_temperature)
+        self.l2_matcher = LocalCorrelationMatcher(c * 2, self.model_cfg.dense_match_hidden_dim, self.model_cfg.dense_match_radius_l2, self.model_cfg.dense_delta_scale_l2)
+        self.l1_matcher = LocalCorrelationMatcher(c, self.model_cfg.dense_match_hidden_dim, self.model_cfg.dense_match_radius_l1, self.model_cfg.dense_delta_scale_l1)
+        self.occlusion_predictor = OcclusionPredictor(c, self.model_cfg.occlusion_hidden_dim)
+        self.residual_refiner = ResidualFlowRefiner(c, self.model_cfg.residual_hidden_dim, self.model_cfg.residual_blocks)
 
         self.sam_encoder = None
         self.sam_fuser = None
@@ -263,11 +253,7 @@ class AniFlowFormerTV5(nn.Module):
                 freeze=self.sam_cfg.encoder_freeze,
                 feature_scales=self.sam_cfg.feature_scales,
             )
-            self.sam_fuser = ContextFusionModule(
-                flow_dim=c * 2,
-                sam_dim=self.sam_cfg.feature_dim,
-                out_dim=c * 2,
-            )
+            self.sam_fuser = ContextFusionModule(flow_dim=c * 2, sam_dim=self.sam_cfg.feature_dim, out_dim=c * 2)
 
     @staticmethod
     def _normalize_mask_labels(sam_masks: Optional[torch.Tensor]) -> Optional[torch.Tensor]:
@@ -302,8 +288,8 @@ class AniFlowFormerTV5(nn.Module):
                 frames_flat = clip.view(b * t, c_img, h_img, w_img)
                 sam_feat_dict = self.sam_encoder(frames_flat)
             if sam_feat_dict and self.sam_fuser is not None:
-                fused_level = []
                 feat_stack = torch.stack(feats_levels[1], dim=1)
+                fused_level = []
                 for sam_feat in sam_feat_dict.values():
                     if sam_feat.dim() == 4:
                         sam_feat = sam_feat.view(b, t, sam_feat.shape[1], sam_feat.shape[2], sam_feat.shape[3])
@@ -317,12 +303,7 @@ class AniFlowFormerTV5(nn.Module):
 
         return feats_levels, boundary_maps, mask_labels
 
-    def _pool_slots(
-        self,
-        feat_l1: torch.Tensor,
-        feat_l2: torch.Tensor,
-        labels: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def _pool_slots(self, feat_l1: torch.Tensor, feat_l2: torch.Tensor, labels: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         b = labels.shape[0]
         s = self.model_cfg.num_slots
         l1 = self.level1_proj(feat_l1)
@@ -347,11 +328,7 @@ class AniFlowFormerTV5(nn.Module):
         slots = self.slot_fusion(torch.cat([_scatter_pool(l1, labels_l1), _scatter_pool(l2, labels_l2)], dim=-1))
         return slots, labels_l1, labels_l2
 
-    def _temporal_slots(
-        self,
-        feat_levels: List[List[torch.Tensor]],
-        mask_labels: torch.Tensor,
-    ) -> Tuple[torch.Tensor, List[torch.Tensor], List[torch.Tensor]]:
+    def _temporal_slots(self, feat_levels: List[List[torch.Tensor]], mask_labels: torch.Tensor) -> Tuple[torch.Tensor, List[torch.Tensor], List[torch.Tensor]]:
         t = len(feat_levels[0])
         slots_all = []
         labels_l1_all = []
@@ -361,7 +338,6 @@ class AniFlowFormerTV5(nn.Module):
             slots_all.append(slots_t)
             labels_l1_all.append(labels_l1_t)
             labels_l2_all.append(labels_l2_t)
-
         slots = torch.stack(slots_all, dim=1)
         slots = slots + self.time_embed[:, :t] + self.slot_embed[:, :, : slots.shape[2]]
         slots_mem = self.temporal_memory(slots.view(slots.shape[0], -1, slots.shape[-1]))
@@ -380,13 +356,7 @@ class AniFlowFormerTV5(nn.Module):
         union = area_a + area_b - inter
         return inter / union.clamp_min(1.0)
 
-    def _match_slots(
-        self,
-        slots_a: torch.Tensor,
-        slots_b: torch.Tensor,
-        labels_a: torch.Tensor,
-        labels_b: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def _match_slots(self, slots_a: torch.Tensor, slots_b: torch.Tensor, labels_a: torch.Tensor, labels_b: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         logits = torch.matmul(slots_a, slots_b.transpose(1, 2)) / math.sqrt(slots_a.shape[-1])
         logits = logits + self.model_cfg.overlap_prior_weight * self._mask_iou(labels_a, labels_b)
         probs = logits.softmax(dim=-1)
@@ -415,14 +385,12 @@ class AniFlowFormerTV5(nn.Module):
         ]
         return torch.stack(basis[: self.model_cfg.slot_basis_count], dim=0)
 
-    def _slot_grid_flow(
-        self,
-        labels: torch.Tensor,
-        params: torch.Tensor,
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+    def _nonrigid_slot_flow(self, labels: torch.Tensor, params: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         b, h, w = labels.shape
         s = params.shape[1]
         affine = params[:, :, :6]
+        basis_coeff = params[:, :, 6:]
+        basis_count = self.model_cfg.slot_basis_count
         ys, xs = torch.meshgrid(
             torch.linspace(-1.0, 1.0, h, device=labels.device),
             torch.linspace(-1.0, 1.0, w, device=labels.device),
@@ -430,19 +398,15 @@ class AniFlowFormerTV5(nn.Module):
         )
         x = xs.view(1, 1, h, w)
         y = ys.view(1, 1, h, w)
-        u = affine[:, :, 0:1, None] * x + affine[:, :, 1:2, None] * y + affine[:, :, 2:3, None]
-        v = affine[:, :, 3:4, None] * x + affine[:, :, 4:5, None] * y + affine[:, :, 5:6, None]
-        basis_coeff = None
-        if self.use_deformable_slots and self.model_cfg.slot_basis_count > 0 and params.shape[-1] > 6:
-            basis_count = self.model_cfg.slot_basis_count
-            basis_coeff = params[:, :, 6:].view(b, s, 2, basis_count)
-            basis = self._basis_maps(h, w, labels.device, params.dtype)
-            basis_u = torch.einsum("bsk,khw->bshw", basis_coeff[:, :, 0], basis)
-            basis_v = torch.einsum("bsk,khw->bshw", basis_coeff[:, :, 1], basis)
-            u = u + self.model_cfg.slot_basis_scale * basis_u.unsqueeze(2)
-            v = v + self.model_cfg.slot_basis_scale * basis_v.unsqueeze(2)
-        slot_flow = torch.cat([u, v], dim=2)
-        slot_flow = slot_flow.view(b, s, 2, h, w)
+        u_aff = affine[:, :, 0:1, None] * x + affine[:, :, 1:2, None] * y + affine[:, :, 2:3, None]
+        v_aff = affine[:, :, 3:4, None] * x + affine[:, :, 4:5, None] * y + affine[:, :, 5:6, None]
+        basis = self._basis_maps(h, w, labels.device, params.dtype)
+        coeff = basis_coeff.view(b, s, 2, basis_count)
+        basis_u = torch.einsum("bsk,khw->bshw", coeff[:, :, 0], basis)
+        basis_v = torch.einsum("bsk,khw->bshw", coeff[:, :, 1], basis)
+        u = u_aff.squeeze(2) + self.model_cfg.slot_basis_scale * basis_u
+        v = v_aff.squeeze(2) + self.model_cfg.slot_basis_scale * basis_v
+        slot_flow = torch.stack([u, v], dim=2)
         one_hot = F.one_hot(labels.clamp(min=0, max=s), num_classes=s + 1)[..., 1:].permute(0, 3, 1, 2).float()
         flow = torch.einsum("bshw,bschw->bchw", one_hot, slot_flow)
         flow[:, 0] *= w * 0.5
@@ -453,12 +417,10 @@ class AniFlowFormerTV5(nn.Module):
         flow_12 = resize_flow(flow_12, flow_01.shape[-2:])
         return flow_01 + warp(flow_12, flow_01)
 
-    def _confidence_gate(self, support_conf: torch.Tensor, pred_conf: torch.Tensor) -> torch.Tensor:
+    def _confidence_gate(self, support_conf: torch.Tensor, pred_conf: torch.Tensor, floor: float) -> torch.Tensor:
         support_conf = support_conf.clamp(0.0, 1.0)
         pred_conf = pred_conf.clamp(0.0, 1.0)
-        # Dense refinement should not override the object prior when slot matching is weak.
-        joint = pred_conf * support_conf
-        floor = float(self.model_cfg.dense_confidence_floor)
+        joint = support_conf * pred_conf
         return floor + (1.0 - floor) * joint
 
     def _pair_flow(
@@ -474,99 +436,100 @@ class AniFlowFormerTV5(nn.Module):
         labels_a_l2: torch.Tensor,
         labels_b_l2: torch.Tensor,
         boundary: Optional[torch.Tensor],
+        enable_global_matcher: bool,
+        enable_local_refine: bool,
+        enable_visibility_composite: bool,
         enable_residual_branch: bool,
     ) -> Dict[str, torch.Tensor]:
         probs, conf, matched_slots = self._match_slots(slots_a, slots_b, labels_a_l1, labels_b_l1)
         pair_feat = torch.cat([slots_a, matched_slots], dim=-1)
-        params = self.motion_head(pair_feat)
-        params = torch.tanh(params)
-        params[:, :, :6] = params[:, :, :6] * self.model_cfg.slot_affine_scale
-        order = torch.tanh(self.order_head(pair_feat).squeeze(-1)) * 2.0
-        occ = torch.sigmoid(self.occ_head(pair_feat).squeeze(-1))
+        motion_params = self.motion_head(pair_feat)
+        motion_params[:, :, :6] = torch.tanh(motion_params[:, :, :6]) * self.model_cfg.slot_affine_scale
+        motion_params[:, :, 6:] = torch.tanh(motion_params[:, :, 6:])
+        slot_visibility = torch.sigmoid(self.visibility_head(pair_feat).squeeze(-1))
+        layer_order = torch.tanh(self.order_head(pair_feat).squeeze(-1)) * 2.0
 
-        slot_flow_l2, basis_coeff = self._slot_grid_flow(labels_a_l2, params)
-        conf_map_l2 = self._slot_scalar_map(labels_a_l2, conf)
-        global_flow_l2 = torch.zeros_like(slot_flow_l2)
-        global_conf_l2 = torch.zeros_like(conf_map_l2)
-        fused_coarse_l2 = slot_flow_l2
-        if self.use_global_matcher and self.global_matcher is not None:
-            pooled_a = F.avg_pool2d(
-                feat_a_l2,
-                kernel_size=self.model_cfg.global_downsample_factor,
-                stride=self.model_cfg.global_downsample_factor,
-            )
-            pooled_b = F.avg_pool2d(
-                feat_b_l2,
-                kernel_size=self.model_cfg.global_downsample_factor,
-                stride=self.model_cfg.global_downsample_factor,
-            )
+        slot_flow_l2, basis_coeff = self._nonrigid_slot_flow(labels_a_l2, motion_params)
+        slot_flow_l1, _ = self._nonrigid_slot_flow(labels_a_l1, motion_params)
+        slot_conf_l2 = self._slot_scalar_map(labels_a_l2, conf)
+        slot_conf_l1 = self._slot_scalar_map(labels_a_l1, conf)
+        vis_map_l1 = self._slot_scalar_map(labels_a_l1, slot_visibility)
+
+        pooled_a = F.avg_pool2d(feat_a_l2, kernel_size=self.model_cfg.global_downsample_factor, stride=self.model_cfg.global_downsample_factor)
+        pooled_b = F.avg_pool2d(feat_b_l2, kernel_size=self.model_cfg.global_downsample_factor, stride=self.model_cfg.global_downsample_factor)
+        if enable_global_matcher:
             global_flow_low, global_conf_low = self.global_matcher(pooled_a, pooled_b)
-            global_flow_l2 = resize_flow(global_flow_low, feat_a_l2.shape[-2:])
+            global_flow_l2 = resize_flow(global_flow_low, feat_a_l2.shape[-2:]) * self.model_cfg.global_update_scale
             global_conf_l2 = F.interpolate(global_conf_low, size=feat_a_l2.shape[-2:], mode="bilinear", align_corners=False)
-            global_gate_l2 = self.model_cfg.global_confidence_floor + (
-                1.0 - self.model_cfg.global_confidence_floor
-            ) * conf_map_l2.clamp(0.0, 1.0) * global_conf_l2.clamp(0.0, 1.0)
-            fused_coarse_l2 = slot_flow_l2 + self.model_cfg.global_update_scale * global_gate_l2 * (global_flow_l2 - slot_flow_l2)
-
-        dense_prior_l2 = fused_coarse_l2
-        corr_conf_l2 = conf_map_l2.new_zeros(conf_map_l2.shape)
-        if self.use_dense_correlation and self.l2_matcher is not None:
-            l2_seed_conf = torch.maximum(conf_map_l2, global_conf_l2)
-            delta_l2, corr_conf_l2 = self.l2_matcher(feat_a_l2, feat_b_l2, fused_coarse_l2, l2_seed_conf)
-            gate_l2 = self._confidence_gate(l2_seed_conf, corr_conf_l2)
-            dense_prior_l2 = fused_coarse_l2 + self.model_cfg.dense_update_scale_l2 * delta_l2 * gate_l2
-
-        slot_flow_l1, _ = self._slot_grid_flow(labels_a_l1, params)
-        dense_prior_up = resize_flow(dense_prior_l2, feat_a_l1.shape[-2:])
-        corr_conf_up = F.interpolate(corr_conf_l2, size=feat_a_l1.shape[-2:], mode="bilinear", align_corners=False)
-        conf_map_l1 = self._slot_scalar_map(labels_a_l1, conf)
-        global_flow_l1 = resize_flow(global_flow_l2, feat_a_l1.shape[-2:])
-        global_conf_l1 = F.interpolate(global_conf_l2, size=feat_a_l1.shape[-2:], mode="bilinear", align_corners=False)
-        if self.use_dense_correlation and self.l1_matcher is not None:
-            blended_prior = (
-                self.model_cfg.dense_prior_mix * dense_prior_up
-                + (1.0 - self.model_cfg.dense_prior_mix) * slot_flow_l1
-            )
-            corr_seed = torch.maximum(conf_map_l1, torch.maximum(corr_conf_up, global_conf_l1))
-            delta_l1, corr_conf_l1 = self.l1_matcher(feat_a_l1, feat_b_l1, blended_prior, corr_seed)
-            gate_l1 = self._confidence_gate(corr_seed, corr_conf_l1)
-            dense_prior = blended_prior + self.model_cfg.dense_update_scale_l1 * delta_l1 * gate_l1
-            corr_conf = torch.maximum(corr_conf_up, corr_conf_l1)
         else:
-            dense_prior = slot_flow_l1
-            corr_conf = conf_map_l1.new_zeros(conf_map_l1.shape)
+            global_flow_l2 = torch.zeros_like(slot_flow_l2)
+            global_conf_l2 = torch.zeros_like(slot_conf_l2)
 
-        boundary_l1 = boundary if boundary is not None else torch.zeros_like(conf_map_l1)
+        global_gate_l2 = self._confidence_gate(slot_conf_l2, global_conf_l2, self.model_cfg.global_confidence_floor)
+        fused_slot_global_l2 = slot_flow_l2 + global_gate_l2 * (global_flow_l2 - slot_flow_l2)
+        fused_slot_global_l1 = resize_flow(fused_slot_global_l2, feat_a_l1.shape[-2:])
+        global_conf_l1 = F.interpolate(global_conf_l2, size=feat_a_l1.shape[-2:], mode="bilinear", align_corners=False)
+
+        if enable_local_refine:
+            delta_l2, local_conf_l2 = self.l2_matcher(feat_a_l2, feat_b_l2, fused_slot_global_l2, 0.5 * (slot_conf_l2 + global_conf_l2))
+            gate_l2 = self._confidence_gate(0.5 * (slot_conf_l2 + global_conf_l2), local_conf_l2, self.model_cfg.dense_confidence_floor)
+            dense_l2 = fused_slot_global_l2 + self.model_cfg.dense_update_scale_l2 * delta_l2 * gate_l2
+        else:
+            local_conf_l2 = torch.zeros_like(slot_conf_l2)
+            dense_l2 = fused_slot_global_l2
+
+        dense_up_l1 = resize_flow(dense_l2, feat_a_l1.shape[-2:])
+        local_conf_up = F.interpolate(local_conf_l2, size=feat_a_l1.shape[-2:], mode="bilinear", align_corners=False)
+        blended_prior = self.model_cfg.dense_prior_mix * dense_up_l1 + (1.0 - self.model_cfg.dense_prior_mix) * fused_slot_global_l1
+        if enable_local_refine:
+            corr_seed = torch.maximum(slot_conf_l1, torch.maximum(global_conf_l1, local_conf_up))
+            delta_l1, local_conf_l1 = self.l1_matcher(feat_a_l1, feat_b_l1, blended_prior, corr_seed)
+            gate_l1 = self._confidence_gate(corr_seed, local_conf_l1, self.model_cfg.dense_confidence_floor)
+            local_dense = blended_prior + self.model_cfg.dense_update_scale_l1 * delta_l1 * gate_l1
+        else:
+            local_conf_l1 = torch.zeros_like(slot_conf_l1)
+            local_dense = blended_prior
+
+        if enable_visibility_composite:
+            fused_coarse_l1 = vis_map_l1 * slot_flow_l1 + (1.0 - vis_map_l1) * fused_slot_global_l1
+            dense_prior = vis_map_l1 * slot_flow_l1 + (1.0 - vis_map_l1) * local_dense
+        else:
+            fused_coarse_l1 = fused_slot_global_l1
+            dense_prior = local_dense
+
+        dense_occ = self.occlusion_predictor(feat_a_l1, feat_b_l1, dense_prior, vis_map_l1 if enable_visibility_composite else slot_conf_l1)
+        boundary_l1 = boundary if boundary is not None else torch.zeros_like(slot_conf_l1)
         if boundary_l1.shape[-2:] != feat_a_l1.shape[-2:]:
             boundary_l1 = F.interpolate(boundary_l1, size=feat_a_l1.shape[-2:], mode="nearest")
-        refiner_conf = 0.5 * (conf_map_l1 + corr_conf) if self.use_dense_correlation else conf_map_l1
+        refine_conf = torch.maximum(slot_conf_l1, torch.maximum(global_conf_l1, local_conf_l1))
         if enable_residual_branch:
-            residual = self.residual_refiner(feat_a_l1, feat_b_l1, dense_prior, boundary_l1, refiner_conf)
+            residual = self.residual_refiner(feat_a_l1, feat_b_l1, dense_prior, boundary_l1, refine_conf, dense_occ)
             residual_gate = boundary_l1 * self.model_cfg.residual_boundary_scale + self.model_cfg.residual_base_scale
             residual_gate = residual_gate * (
                 self.model_cfg.residual_confidence_floor
-                + (1.0 - self.model_cfg.residual_confidence_floor) * refiner_conf.clamp(0.0, 1.0)
+                + (1.0 - self.model_cfg.residual_confidence_floor) * (1.0 - dense_occ).clamp(0.0, 1.0)
             )
             residual = residual * residual_gate
         else:
             residual = torch.zeros_like(dense_prior)
         flow = dense_prior + residual
+
         return {
             "flow": flow,
-            "coarse_flow": fused_coarse_l2,
             "slot_flow": slot_flow_l1,
-            "global_flow": global_flow_l1,
-            "fused_coarse_flow": resize_flow(fused_coarse_l2, feat_a_l1.shape[-2:]),
+            "global_flow": resize_flow(global_flow_l2, feat_a_l1.shape[-2:]),
+            "fused_coarse_flow": fused_coarse_l1,
             "dense_prior_flow": dense_prior,
             "residual_flow": residual,
             "match_probs": probs,
             "match_confidence": conf,
-            "corr_confidence": corr_conf.squeeze(1),
             "global_corr_confidence": global_conf_l1.squeeze(1),
-            "segment_params": params,
-            "slot_basis_coeffs": basis_coeff if basis_coeff is not None else params.new_zeros((params.shape[0], params.shape[1], 2, 0)),
-            "layer_order": order,
-            "occlusion_slots": occ,
+            "local_corr_confidence": local_conf_l1.squeeze(1),
+            "segment_params": motion_params[:, :, :6],
+            "slot_basis_coeffs": basis_coeff,
+            "slot_visibility": slot_visibility,
+            "layer_order": layer_order,
+            "dense_occlusion": dense_occ,
         }
 
     def _forward_single_direction(
@@ -574,20 +537,18 @@ class AniFlowFormerTV5(nn.Module):
         clip: torch.Tensor,
         sam_masks: Optional[torch.Tensor],
         sam_features: Optional[Dict[int, torch.Tensor]],
+        enable_global_matcher: bool,
+        enable_local_refine: bool,
+        enable_visibility_composite: bool,
         enable_residual_branch: bool,
     ) -> Dict[str, List[torch.Tensor]]:
-        feats_levels, boundary_maps, mask_labels = self._extract_features(
-            clip,
-            sam_masks=sam_masks,
-            sam_features=sam_features,
-        )
+        feats_levels, boundary_maps, mask_labels = self._extract_features(clip, sam_masks=sam_masks, sam_features=sam_features)
         if mask_labels is None:
-            raise ValueError("AniFlowFormerTV5 requires SAM masks for object-memory training.")
+            raise ValueError("AniFlowFormerTV6 requires SAM masks for object-memory training.")
 
         slots_mem, labels_l1_all, labels_l2_all = self._temporal_slots(feats_levels, mask_labels)
         outputs: Dict[str, List[torch.Tensor]] = {
             "flows": [],
-            "coarse_flow": [],
             "slot_flow": [],
             "global_flow": [],
             "fused_coarse_flow": [],
@@ -595,12 +556,13 @@ class AniFlowFormerTV5(nn.Module):
             "residual_flow": [],
             "match_probs": [],
             "match_confidence": [],
-            "corr_confidence": [],
             "global_corr_confidence": [],
+            "local_corr_confidence": [],
             "segment_params": [],
             "slot_basis_coeffs": [],
+            "slot_visibility": [],
             "layer_order": [],
-            "occlusion_slots": [],
+            "dense_occlusion": [],
             "match_probs_long": [],
             "layer_order_all": [slots_mem.new_zeros((slots_mem.shape[0], slots_mem.shape[2])) for _ in range(slots_mem.shape[1])],
         }
@@ -619,11 +581,13 @@ class AniFlowFormerTV5(nn.Module):
                 labels_l2_all[k],
                 labels_l2_all[k + 1],
                 boundary_k,
+                enable_global_matcher=enable_global_matcher,
+                enable_local_refine=enable_local_refine,
+                enable_visibility_composite=enable_visibility_composite,
                 enable_residual_branch=enable_residual_branch,
             )
+            outputs["flows"].append(pair_out["flow"])
             for key in (
-                "flow",
-                "coarse_flow",
                 "slot_flow",
                 "global_flow",
                 "fused_coarse_flow",
@@ -631,29 +595,22 @@ class AniFlowFormerTV5(nn.Module):
                 "residual_flow",
                 "match_probs",
                 "match_confidence",
-                "corr_confidence",
                 "global_corr_confidence",
+                "local_corr_confidence",
                 "segment_params",
                 "slot_basis_coeffs",
+                "slot_visibility",
                 "layer_order",
-                "occlusion_slots",
+                "dense_occlusion",
             ):
-                outputs[key if key != "flow" else "flows"].append(pair_out[key])
+                outputs[key].append(pair_out[key])
             outputs["layer_order_all"][k] = pair_out["layer_order"]
             if k == clip.shape[1] - 2:
-                outputs["layer_order_all"][k + 1] = torch.matmul(
-                    pair_out["match_probs"].transpose(1, 2),
-                    pair_out["layer_order"].unsqueeze(-1),
-                ).squeeze(-1)
+                outputs["layer_order_all"][k + 1] = torch.matmul(pair_out["match_probs"].transpose(1, 2), pair_out["layer_order"].unsqueeze(-1)).squeeze(-1)
 
         if self.model_cfg.use_long_gap_matching and clip.shape[1] >= 3:
             for k in range(clip.shape[1] - 2):
-                probs_long, _, _ = self._match_slots(
-                    slots_mem[:, k],
-                    slots_mem[:, k + 2],
-                    labels_l1_all[k],
-                    labels_l1_all[k + 2],
-                )
+                probs_long, _, _ = self._match_slots(slots_mem[:, k], slots_mem[:, k + 2], labels_l1_all[k], labels_l1_all[k + 2])
                 outputs["match_probs_long"].append(probs_long)
 
         return outputs
@@ -664,6 +621,9 @@ class AniFlowFormerTV5(nn.Module):
         sam_masks: Optional[torch.Tensor] = None,
         sam_features: Optional[Dict[int, torch.Tensor]] = None,
         return_losses: bool = False,
+        enable_global_matcher: bool = True,
+        enable_local_refine: bool = True,
+        enable_visibility_composite: bool = True,
         enable_residual_branch: bool = True,
         **_: Dict,
     ) -> Dict[str, torch.Tensor]:
@@ -671,12 +631,12 @@ class AniFlowFormerTV5(nn.Module):
             clip,
             sam_masks=sam_masks,
             sam_features=sam_features,
+            enable_global_matcher=enable_global_matcher,
+            enable_local_refine=enable_local_refine,
+            enable_visibility_composite=enable_visibility_composite,
             enable_residual_branch=enable_residual_branch,
         )
-        flows_long = []
-        for k in range(max(0, len(out_fw["flows"]) - 1)):
-            flows_long.append(self._compose_flow(out_fw["flows"][k], out_fw["flows"][k + 1]))
-
+        flows_long = [self._compose_flow(out_fw["flows"][k], out_fw["flows"][k + 1]) for k in range(max(0, len(out_fw["flows"]) - 1))]
         outputs = {
             "flows": out_fw["flows"],
             "flows_fw": out_fw["flows"],
@@ -689,15 +649,13 @@ class AniFlowFormerTV5(nn.Module):
             "match_probs_long": out_fw["match_probs_long"],
             "match_confidence_fw": out_fw["match_confidence"],
             "match_confidence_bw": [],
-            "corr_confidence_fw": out_fw["corr_confidence"],
-            "corr_confidence_bw": [],
             "global_corr_confidence_fw": out_fw["global_corr_confidence"],
             "global_corr_confidence_bw": [],
+            "local_corr_confidence_fw": out_fw["local_corr_confidence"],
+            "local_corr_confidence_bw": [],
             "layer_order_fw": out_fw["layer_order"],
             "layer_order_bw": [],
             "layer_order_all": out_fw["layer_order_all"],
-            "occlusion_slots_fw": out_fw["occlusion_slots"],
-            "occlusion_slots_bw": [],
             "slot_flow_fw": out_fw["slot_flow"],
             "slot_flow_bw": [],
             "global_flow_fw": out_fw["global_flow"],
@@ -708,11 +666,12 @@ class AniFlowFormerTV5(nn.Module):
             "dense_prior_flow_bw": [],
             "residual_flow_fw": out_fw["residual_flow"],
             "residual_flow_bw": [],
-            "coarse_flow_fw": out_fw["coarse_flow"],
-            "coarse_flow_bw": [],
+            "slot_visibility_fw": out_fw["slot_visibility"],
+            "slot_visibility_bw": [],
+            "dense_occlusion_fw": out_fw["dense_occlusion"],
+            "dense_occlusion_bw": [],
             "slot_basis_coeffs_fw": out_fw["slot_basis_coeffs"],
             "slot_basis_coeffs_bw": [],
-            "debug_branch": "v5_3" if self.use_deformable_slots else ("v5_2" if self.use_global_matcher else ("v5_1" if self.use_dense_correlation else "v5")),
         }
 
         if return_losses:
@@ -720,30 +679,33 @@ class AniFlowFormerTV5(nn.Module):
             masks_bw = torch.flip(sam_masks, [1]) if sam_masks is not None else None
             feats_bw = None
             if sam_features is not None:
-                feats_bw = {}
-                for key, value in sam_features.items():
-                    feats_bw[key] = torch.flip(value, [1]) if value.dim() == 5 else value
+                feats_bw = {key: (torch.flip(value, [1]) if value.dim() == 5 else value) for key, value in sam_features.items()}
             out_bw = self._forward_single_direction(
                 clip_bw,
                 sam_masks=masks_bw,
                 sam_features=feats_bw,
+                enable_global_matcher=enable_global_matcher,
+                enable_local_refine=enable_local_refine,
+                enable_visibility_composite=enable_visibility_composite,
                 enable_residual_branch=enable_residual_branch,
             )
             n = len(out_bw["flows"])
-            outputs["flows_bw"] = [out_bw["flows"][n - 1 - i] for i in range(n)]
-            outputs["segment_params_bw"] = [out_bw["segment_params"][n - 1 - i] for i in range(n)]
-            outputs["match_probs_bw"] = [out_bw["match_probs"][n - 1 - i] for i in range(n)]
-            outputs["match_confidence_bw"] = [out_bw["match_confidence"][n - 1 - i] for i in range(n)]
-            outputs["corr_confidence_bw"] = [out_bw["corr_confidence"][n - 1 - i] for i in range(n)]
-            outputs["global_corr_confidence_bw"] = [out_bw["global_corr_confidence"][n - 1 - i] for i in range(n)]
-            outputs["layer_order_bw"] = [out_bw["layer_order"][n - 1 - i] for i in range(n)]
-            outputs["occlusion_slots_bw"] = [out_bw["occlusion_slots"][n - 1 - i] for i in range(n)]
-            outputs["slot_flow_bw"] = [out_bw["slot_flow"][n - 1 - i] for i in range(n)]
-            outputs["global_flow_bw"] = [out_bw["global_flow"][n - 1 - i] for i in range(n)]
-            outputs["fused_coarse_flow_bw"] = [out_bw["fused_coarse_flow"][n - 1 - i] for i in range(n)]
-            outputs["dense_prior_flow_bw"] = [out_bw["dense_prior_flow"][n - 1 - i] for i in range(n)]
-            outputs["residual_flow_bw"] = [out_bw["residual_flow"][n - 1 - i] for i in range(n)]
-            outputs["coarse_flow_bw"] = [out_bw["coarse_flow"][n - 1 - i] for i in range(n)]
-            outputs["slot_basis_coeffs_bw"] = [out_bw["slot_basis_coeffs"][n - 1 - i] for i in range(n)]
-
+            for key_fw, key_bw in (
+                ("flows", "flows_bw"),
+                ("segment_params", "segment_params_bw"),
+                ("match_probs", "match_probs_bw"),
+                ("match_confidence", "match_confidence_bw"),
+                ("global_corr_confidence", "global_corr_confidence_bw"),
+                ("local_corr_confidence", "local_corr_confidence_bw"),
+                ("layer_order", "layer_order_bw"),
+                ("slot_flow", "slot_flow_bw"),
+                ("global_flow", "global_flow_bw"),
+                ("fused_coarse_flow", "fused_coarse_flow_bw"),
+                ("dense_prior_flow", "dense_prior_flow_bw"),
+                ("residual_flow", "residual_flow_bw"),
+                ("slot_visibility", "slot_visibility_bw"),
+                ("dense_occlusion", "dense_occlusion_bw"),
+                ("slot_basis_coeffs", "slot_basis_coeffs_bw"),
+            ):
+                outputs[key_bw] = [out_bw[key_fw][n - 1 - i] for i in range(n)]
         return outputs

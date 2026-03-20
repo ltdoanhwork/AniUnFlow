@@ -1,0 +1,19 @@
+{
+  "config_path": "/home/serverai/ltdoanh/AniUnFlow/workspaces/v5_1_object_memory_dense_parallel_v4/config.yaml",
+  "checkpoint_path": "/home/serverai/ltdoanh/AniUnFlow/workspaces/v5_1_object_memory_dense_parallel_v4/best.pth",
+  "scene": "cami_02_05_A",
+  "centers": [
+    31
+  ],
+  "records": [
+    {
+      "scene": "cami_02_05_A",
+      "center": 31,
+      "frame": "0306",
+      "panel_path": "demo/v5_1_object_memory_dense_parallel_v4_paper_smoke/panels/cami_02_05_A_center_0031_0306.png",
+      "mean_epe": 199.35595703125,
+      "mean_gt_motion": 200.3447265625,
+      "rad_max": 281.06101463867185
+    }
+  ]
+}

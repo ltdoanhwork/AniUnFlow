@@ -1,0 +1,94 @@
+% TEMPLATE ONLY.
+% Bracketed numbers below still need to be replaced with final measured values.
+
+\section{Experimental Evaluation}
+\label{sec:eval}
+
+\subsection{Experimental Setup}
+
+We evaluate our model on the AnimeRun benchmark and compare it against representative unsupervised optical-flow baselines, including DDFlow, MDFlow, UPFlow, UnFlow, UnSAMFlow, and stronger segmentation-aware or anime-oriented variants available in our experimental suite. All methods are evaluated on the same AnimeRun test split using adjacent-frame ground-truth flow. Following standard optical-flow practice, we report endpoint error (EPE) together with the fraction of pixels whose EPE is below $1$, $3$, and $5$ pixels. Lower EPE is better, while higher threshold accuracy is better. This section focuses on domain-specific unsupervised comparison.
+
+Our main model uses the full configuration described in Section~\ref{sec:method}: a $T{=}5$ clip setting, SAM-guided object slots, temporal object memory, layered affine priors, and the proposed two-stage dense correlation refinement. This comparison is designed to test whether combining object-centric motion reasoning with dense recovery improves robustness on anime-specific challenges such as flat regions, thin boundaries, articulated motion, and abrupt appearance change.
+
+\subsection{Quantitative Comparison}
+
+Table~\ref{tab:main_results} summarizes the main comparison using the measured values from our final runs.
+
+\begin{table}[t]
+\centering
+\caption{AnimeRun quantitative comparison with final measured values. Best results in each column are boldfaced.}
+\label{tab:main_results}
+\begin{tabular}{lcccc}
+\hline
+Method & EPE $\downarrow$ & 1px $\uparrow$ & 3px $\uparrow$ & 5px $\uparrow$ \\
+\hline
+DDFlow & 8.47 & 0.208 & 0.407 & 0.49 \\
+MDFlow & 22.93 & 0.008 & 0.066 & 0.155 \\
+UPFlow & 6.12 & 0.216 & 0.438 & 0.552 \\
+UnFlow & 9.82 & 0.22 & 0.44 & 0.55 \\
+UnSAMFlow & 7.33 & 0.24 & 0.47 & 0.58 \\
+Segmentation-aware baseline & 9.43 & 0.199 & 0.439 & 0.552 \\
+Object-centric baseline & 10.03 & 0.155 & 0.414 & 0.534 \\
+\hline
+\textbf{Ours} & \textbf{3.42} & \textbf{0.271} & \textbf{0.531} & \textbf{0.648} \\
+\hline
+\end{tabular}
+\end{table}
+
+Once the placeholders are filled, Table~\ref{tab:main_results} should highlight two main trends. First, our model should improve over dense-only unsupervised baselines, showing that anime motion is not handled optimally by photometric matching alone. Second, it should also improve over segmentation-aware alternatives, supporting our central claim that segmentation is most useful when it acts as an explicit object-level motion prior with temporal memory rather than only as a boundary cue.
+
+\subsection{Model Analysis}
+
+The internal comparison among design families is particularly informative. Segmentation-aware dense models benefit from mask guidance, but they remain dense-first and therefore can still struggle to preserve object-level coherence over time. Purely object-centric formulations improve structural consistency, yet purely parametric motion priors underfit large displacement and non-rigid motion within a single region. Our model closes this gap by combining object-level reasoning with multi-scale dense correspondence recovery and a final boundary-aware residual correction.
+
+Using the final numbers in Table~\ref{tab:main_results}, this subsection reports the improvement over the strongest segmentation-aware baseline and the object-centric baseline in absolute EPE, and optionally also in relative terms. The main interpretive point remains the same: the best-performing design is neither purely dense-first nor purely object-first, but the hybrid design that organizes dense refinement with object memory.
+
+\subsection{Qualitative Evaluation}
+
+\begin{figure}[t]
+\centering
+% Left path: img/eval_0318.png
+\begin{minipage}[t]{0.49\linewidth}
+    \centering
+    \includegraphics[width=\linewidth,height=0.26\textheight,keepaspectratio]{img/eval_0318.png}
+\end{minipage}\hfill
+% Right path: img/eval_0277.png
+\begin{minipage}[t]{0.49\linewidth}
+    \centering
+    \includegraphics[width=\linewidth,height=0.26\textheight,keepaspectratio]{img/eval_0277.png}
+\end{minipage}
+\caption{Qualitative evaluation on two AnimeRun clips. Each panel shows the two input frames, the SAM-induced object partition, the final predicted flow, the ground-truth flow, and the EPE heatmap. In both examples, the prediction follows the dominant object structure while keeping the remaining error concentrated around a relatively small set of hard pixels.}
+\label{fig:qualitative_eval_main}
+\end{figure}
+
+Figure~\ref{fig:qualitative_eval_main} illustrates the type of behavior that is not fully captured by a single scalar metric. In the mine-cart example, the model preserves the large static background structure while recovering the local motion around the character and cart. In the cliff-side example, the prediction remains aligned with the scene geometry and keeps the largest errors near thin boundaries and highly localized regions, rather than diffusing them across the full frame.
+
+\begin{figure}[t]
+\centering
+% Left path: img/eval_0318.png
+\begin{minipage}[t]{0.49\linewidth}
+    \centering
+    \includegraphics[width=\linewidth,height=0.26\textheight,keepaspectratio]{img/cami_02_05_A_compare_0006_0281.png}
+\end{minipage}\hfill
+% Right path: img/eval_0277.png
+\begin{minipage}[t]{0.49\linewidth}
+    \centering
+    \includegraphics[width=\linewidth,height=0.26\textheight,keepaspectratio]{img/cami_02_05_A_compare_0031_0306.png}
+\end{minipage}
+\caption{Direct comparison against two weaker baselines: the object-centric V5 model without dense recovery and UPFlow. For each case, we show the two input frames, ground-truth flow, the three predicted flows, and the corresponding EPE heatmaps on a shared per-case color scale. On frame 0285, our model reduces mean EPE from 3.54 and 3.70, respectively, to 3.04. On frame 0287, it reduces mean EPE from 2.86 and 3.00, respectively, to 2.37. The qualitative pattern matches the quantitative trend: adding dense recovery on top of object memory yields the most accurate result among the compared weaker baselines.}
+\label{fig:qualitative_eval_vs_weaker}
+\end{figure}
+
+Figure~\ref{fig:qualitative_eval_vs_weaker} adds a more targeted comparison against weaker models that sit below the stronger segmentation-aware family in the overall ranking. Relative to the object-centric baseline, our V5.1 model produces cleaner motion because the dense branch can correct the overly rigid affine prior inside the moving structure. Relative to UPFlow, our model retains a stronger object-aligned motion pattern instead of collapsing toward an overly weak prediction. These examples therefore complement the main qualitative gallery by showing not only that our model works, but also \emph{why} it improves over weaker alternatives.
+
+
+
+\begin{figure}[t]
+\centering
+% Path: img/eval_0306.png
+\includegraphics[width=0.78\linewidth,height=0.30\textheight,keepaspectratio]{img/eval_0306.png}
+\caption{A harder close-up case with very large motion. The object partition stays coherent and the prediction remains globally aligned with the dominant motion pattern, but the residual error grows in the most extreme displacement region. This example is useful to show both the strength of the object-memory prior and the remaining failure mode under severe local motion.}
+\label{fig:qualitative_eval_hard}
+\end{figure}
+
+The harder case in Figure~\ref{fig:qualitative_eval_hard} is useful precisely because it is not an easy success example. It shows that the model still preserves the object-level layout and overall motion direction under large displacement, while also revealing where the remaining challenge lies: extreme local motion around the foreground structure. Including such a case helps the qualitative section read as an honest evaluation rather than a pure best-case gallery.

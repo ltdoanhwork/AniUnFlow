@@ -98,6 +98,12 @@ def infer_family(run_dir: Path, cfg: Dict[str, Any]) -> str:
     path_lower = relpath(run_dir).lower()
     model_cfg = cfg.get("model", {}) if isinstance(cfg, dict) else {}
     backbone = str(model_cfg.get("backbone", "")).lower() if isinstance(model_cfg, dict) else ""
+    if "v6_global_slot_search" in path_lower or "v6_global_slot_search" in backbone or backbone.startswith("v6_"):
+        return "AniFlowFormerTV6"
+    if "v5_3_object_memory_deformable_global" in path_lower or "v5_3_object_memory_deformable_global" in backbone:
+        return "AniFlowFormerTV5.3"
+    if "v5_2_object_memory_global" in path_lower or "v5_2_object_memory_global" in backbone:
+        return "AniFlowFormerTV5.2"
     if "v5_1_object_memory" in path_lower or "v5_1_object_memory" in backbone:
         return "AniFlowFormerTV5.1"
     if "v5_object_memory" in path_lower:
@@ -132,6 +138,12 @@ def infer_research_branch(run_dir: Path, cfg: Dict[str, Any]) -> str:
     backbone = str(model_cfg.get("backbone", "")).lower() if isinstance(model_cfg, dict) else ""
     model_name = str(model_cfg.get("name", "")).lower() if isinstance(model_cfg, dict) else ""
 
+    if "v6_global_slot_search" in path_lower or "v6_global_slot_search" in backbone or "aniflowformertv6" in model_name:
+        return "V6 Global Slot Search"
+    if "v5_3_object_memory_deformable_global" in path_lower or "v5_3_object_memory_deformable_global" in backbone:
+        return "V5.3 Deformable Object Memory Global"
+    if "v5_2_object_memory_global" in path_lower or "v5_2_object_memory_global" in backbone:
+        return "V5.2 Object Memory Global"
     if "v5_1_object_memory" in path_lower or "v5_1_object_memory" in backbone:
         return "V5.1 Object Memory Dense"
     if "v5_object_memory" in path_lower or "v5_object_memory" in backbone or "aniflowformertv5" in model_name:
@@ -325,7 +337,7 @@ def collect_tensorboard(run_dir: Path, base_row: Dict[str, Any]) -> List[Dict[st
     if tb_dir is None:
         return []
     for event_file in latest_event_files(tb_dir):
-        metrics_by_step: Dict[int, Dict[str, float]] = {}
+        series_by_tag: Dict[str, List[Tuple[int, float]]] = {}
         timed_out = False
 
         def _timeout_handler(signum: int, frame: Any) -> None:
@@ -339,10 +351,9 @@ def collect_tensorboard(run_dir: Path, base_row: Dict[str, Any]) -> List[Dict[st
                 event = event_pb2.Event.FromString(record)
                 if not event.summary or not event.summary.value:
                     continue
-                step = int(event.step)
                 for value in event.summary.value:
                     tag = value.tag
-                    if not tag.startswith("val/") or tag.endswith("_epoch"):
+                    if not tag.startswith("val/"):
                         continue
                     value_kind = value.WhichOneof("value")
                     scalar_value: Optional[float] = None
@@ -356,8 +367,7 @@ def collect_tensorboard(run_dir: Path, base_row: Dict[str, Any]) -> List[Dict[st
                             scalar_value = None
                     if scalar_value is None:
                         continue
-                    metric_name = normalize_metric_name(tag.split("/", 1)[1])
-                    metrics_by_step.setdefault(step, {})[metric_name] = scalar_value
+                    series_by_tag.setdefault(tag, []).append((int(event.step), scalar_value))
         except TimeoutError:
             timed_out = True
         except Exception:
@@ -366,26 +376,41 @@ def collect_tensorboard(run_dir: Path, base_row: Dict[str, Any]) -> List[Dict[st
             signal.alarm(0)
             signal.signal(signal.SIGALRM, previous_handler)
 
-        if not metrics_by_step:
+        if not series_by_tag:
             continue
 
-        if any("epe" in step_metrics for step_metrics in metrics_by_step.values()):
-            best_step, best_metrics = min(
-                (
-                    (step, step_metrics)
-                    for step, step_metrics in metrics_by_step.items()
-                    if "epe" in step_metrics
-                ),
-                key=lambda item: item[1]["epe"],
-            )
+        base_tag = "val/epe_epoch" if "val/epe_epoch" in series_by_tag else "val/epe"
+        if base_tag not in series_by_tag:
+            continue
+
+        base_series = series_by_tag[base_tag]
+        if not base_series:
+            continue
+
+        best_index = min(range(len(base_series)), key=lambda index: base_series[index][1])
+        base_step, best_epe = base_series[best_index]
+        best_metrics: Dict[str, float] = {"epe": best_epe}
+
+        for tag, values in series_by_tag.items():
+            if tag == base_tag or not values or best_index >= len(values):
+                continue
+            metric_name = normalize_metric_name(tag.split("/", 1)[1].removesuffix("_epoch"))
+            best_metrics[metric_name] = values[best_index][1]
+
+        selected_step = base_step
+        if "val/epe" in series_by_tag and best_index < len(series_by_tag["val/epe"]):
+            selected_step = series_by_tag["val/epe"][best_index][0]
+
+        if base_tag.endswith("_epoch"):
+            selected_epoch = base_step
         else:
-            best_step, best_metrics = sorted(metrics_by_step.items())[0]
+            selected_epoch = int(best_index + 1)
 
         row = dict(base_row)
         row["source_kind"] = "tensorboard_partial" if timed_out else "tensorboard"
         row["source_path"] = relpath(event_file)
-        row["selected_step"] = int(best_step)
-        row["selected_epoch"] = int(best_step)
+        row["selected_step"] = int(selected_step)
+        row["selected_epoch"] = int(selected_epoch)
         row.update(best_metrics)
         return [row]
     return []

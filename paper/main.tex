@@ -1,0 +1,63 @@
+
+\documentclass[pdflatex,sn-mathphys-num]{sn-jnl}
+\usepackage{graphicx}%
+\usepackage{multirow}%
+\usepackage{amsmath,amssymb,amsfonts}%
+\usepackage{amsthm}%
+\usepackage{mathrsfs}%
+\usepackage[title]{appendix}%
+\usepackage{xcolor}%
+\usepackage{textcomp}%
+\usepackage{manyfoot}%
+\usepackage{booktabs}%
+\usepackage{algorithm}%
+\usepackage{algorithmicx}%
+\usepackage{algpseudocode}%
+\usepackage{listings}%
+\theoremstyle{thmstyleone}%
+\newtheorem{theorem}{Theorem}
+\newtheorem{proposition}[theorem]{Proposition}% 
+\theoremstyle{thmstyletwo}%
+\newtheorem{example}{Example}%
+\newtheorem{remark}{Remark}%
+\theoremstyle{thmstylethree}%
+\newtheorem{definition}{Definition}%
+\raggedbottom
+
+\begin{document}
+
+\title[Article Title]{AniUnFlow-SamT: Unsupervised Segment-Guided Multi-Frame Optical Flow for 2D Animation with Hybrid Temporal Transformers}
+
+
+
+
+\author[1,2]{\fnm{Thien Doanh} \sur{Le}}\email{ITCSIU22237@student.hcmiu.edu.vn}
+\author*[1,2]{\fnm{Kha Tu} \sur{Huynh}}\email{hktu@vnuhcm.edu.vn}
+
+\affil*[1]{\orgname{International University}, \orgaddress{\city{Ho Chi Minh City}, \country{Vietnam}}}
+
+\affil[2]{\orgname{Vietnam National University Ho Chi Minh City}, \orgaddress{\city{Ho Chi Minh City}, \country{Vietnam}}}
+
+
+
+\abstract{Optical flow estimation in 2D animation remains challenging due to flat-color regions, weak textures, sharp boundaries, and large non-rigid motion. We propose \textbf{AniUnFlow-SamT}, an unsupervised segment-guided multi-frame optical flow framework with hybrid temporal transformers for anime-style videos. Instead of relying on two-frame estimation, the proposed model leverages short clips and combines temporal slot memory, segment-guided object correspondence, layered affine motion priors, and two-stage dense correlation refinement, followed by boundary-aware residual correction. To train without ground-truth flow, we design a unified objective integrating photometric reconstruction, smoothness regularization, forward-backward consistency, segment-level coherence, boundary-aware constraints, and multi-frame cycle consistency. This design improves motion boundary sharpness, regional coherence, and temporal stability under large motion and occlusion-heavy scenarios. Overall, AniUnFlow-SamT provides a practical and robust unsupervised solution for animation-oriented optical flow and supports downstream tasks such as interpolation and temporally consistent stylized video processing.}
+
+
+\keywords{Optical flow, 2D animation, Unsupervised learning, Multi-frame motion estimation, Segment-guided modeling, Temporal transformers}
+
+\maketitle
+
+
+
+\input{src/introduction} 
+\input{src/related_work}
+\input{src/method}
+\input{src/experiment}
+\input{src/ablation}
+\input{src/conclusion}
+
+
+
+\bibliography{sn-bibliography}
+
+\end{document}

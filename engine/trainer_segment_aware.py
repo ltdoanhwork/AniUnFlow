@@ -33,6 +33,7 @@ from tqdm import tqdm
 from models import AniFlowFormerT, ModelConfig as AFConfig
 from models.aniunflow_v4.model import AniFlowFormerTV4, V4Config
 from models.aniunflow_v5 import AniFlowFormerTV5, V5Config, V5ObjectMemoryLossBundle
+from models.aniunflow_v6 import AniFlowFormerTV6, V6Config, V6GlobalSearchLossBundle
 from models.aniunflow.losses import UnsupervisedFlowLoss as AFTLosses
 
 # Segment-aware imports
@@ -227,6 +228,9 @@ class SegmentAwareTrainer:
         self.v5_loss_bundle: Optional[V5ObjectMemoryLossBundle] = None
         if isinstance(self.model, AniFlowFormerTV5):
             self.v5_loss_bundle = V5ObjectMemoryLossBundle.from_config(cfg)
+        self.v6_loss_bundle: Optional[V6GlobalSearchLossBundle] = None
+        if isinstance(self.model, AniFlowFormerTV6):
+            self.v6_loss_bundle = V6GlobalSearchLossBundle.from_config(cfg)
         
         # SAM-2 guidance module
         sam_cfg = cfg.get("sam", {})
@@ -272,7 +276,7 @@ class SegmentAwareTrainer:
         self.teacher_conf_threshold = float(teacher_cfg.get("confidence_threshold", 0.0))
         self.teacher_every_n_steps = max(1, int(teacher_cfg.get("every_n_steps", 1)))
         self.teacher_model: Optional[nn.Module] = None
-        if self.teacher_enabled and isinstance(self.model, (AniFlowFormerTV4, AniFlowFormerTV5)):
+        if self.teacher_enabled and isinstance(self.model, (AniFlowFormerTV4, AniFlowFormerTV5, AniFlowFormerTV6)):
             self.teacher_model = copy.deepcopy(self.model).to(self.device)
             self.teacher_model.eval()
             for p in self.teacher_model.parameters():
@@ -322,6 +326,10 @@ class SegmentAwareTrainer:
             "enable_residual_branch": None,
             "enable_segment_cycle": None,
             "enable_layered_order": None,
+            "enable_global_matcher": None,
+            "enable_local_refine": None,
+            "enable_visibility_composite": None,
+            "enable_hard_motion_reweight": None,
         }
         self._runtime_overrides: Dict[str, Optional[bool]] = {
             "enable_occ_aware": None,
@@ -330,6 +338,10 @@ class SegmentAwareTrainer:
             "enable_residual_branch": None,
             "enable_segment_cycle": None,
             "enable_layered_order": None,
+            "enable_global_matcher": None,
+            "enable_local_refine": None,
+            "enable_visibility_composite": None,
+            "enable_hard_motion_reweight": None,
         }
         # Global numerical guards against occasional non-finite spikes.
         self.nan_guard_enabled = bool(cfg.get("runtime", {}).get("nan_guard_enabled", True))
@@ -583,6 +595,10 @@ class SegmentAwareTrainer:
                 "enable_residual_branch": None,
                 "enable_segment_cycle": None,
                 "enable_layered_order": None,
+                "enable_global_matcher": None,
+                "enable_local_refine": None,
+                "enable_visibility_composite": None,
+                "enable_hard_motion_reweight": None,
             }
             return
 
@@ -593,6 +609,10 @@ class SegmentAwareTrainer:
             "enable_residual_branch": stage.get("enable_residual_branch", None),
             "enable_segment_cycle": stage.get("enable_segment_cycle", None),
             "enable_layered_order": stage.get("enable_layered_order", None),
+            "enable_global_matcher": stage.get("enable_global_matcher", None),
+            "enable_local_refine": stage.get("enable_local_refine", None),
+            "enable_visibility_composite": stage.get("enable_visibility_composite", None),
+            "enable_hard_motion_reweight": stage.get("enable_hard_motion_reweight", None),
         }
 
         changed_msgs: List[str] = []
@@ -647,7 +667,15 @@ class SegmentAwareTrainer:
                     self.model.iterative_refiner.use_gradient_checkpointing = refiner_ckpt
                 changed_msgs.append(f"refiner_ckpt={refiner_ckpt}")
 
-        for key in ("enable_residual_branch", "enable_segment_cycle", "enable_layered_order"):
+        for key in (
+            "enable_residual_branch",
+            "enable_segment_cycle",
+            "enable_layered_order",
+            "enable_global_matcher",
+            "enable_local_refine",
+            "enable_visibility_composite",
+            "enable_hard_motion_reweight",
+        ):
             if key in stage:
                 value = bool(stage[key])
                 if self._runtime_state.get(key) != value:
@@ -738,6 +766,16 @@ class SegmentAwareTrainer:
                 print("[Trainer] Initializing AniFlowFormerTV5...")
                 config = V5Config.from_dict(self.cfg)
                 return AniFlowFormerTV5(config)
+
+            is_v6_cfg = (
+                model_name == "AniFlowFormerTV6"
+                or backbone_name == "v6_global_slot_search"
+                or backbone_name.startswith("v6_")
+            )
+            if is_v6_cfg:
+                print("[Trainer] Initializing AniFlowFormerTV6...")
+                config = V6Config.from_dict(self.cfg)
+                return AniFlowFormerTV6(config)
 
             # V4 model detection:
             # - explicit model name, or
@@ -1094,7 +1132,7 @@ class SegmentAwareTrainer:
                 # Boundary maps are needed only for non-V4 segment-aware loss path.
                 need_boundary_maps = self.use_segment_losses and not isinstance(
                     self.model,
-                    (AniFlowFormerTV4, AniFlowFormerTV5),
+                    (AniFlowFormerTV4, AniFlowFormerTV5, AniFlowFormerTV6),
                 )
                 if need_boundary_maps and segment_masks is not None:
                     with torch.no_grad():
@@ -1325,7 +1363,26 @@ class SegmentAwareTrainer:
                         loss_dict["v5_layered_order"] = float(v5_losses["layered_order"].detach())
                         loss_dict["v5_boundary_residual"] = float(v5_losses["boundary_residual"].detach())
                         loss_dict["v5_dense_slot_consistency"] = float(v5_losses["dense_slot_consistency"].detach())
+                        loss_dict["v5_global_dense_consistency"] = float(v5_losses["global_dense_consistency"].detach())
                         loss_dict["v5_total"] = float(v5_losses["total"].detach())
+
+                    global_photo_w = float(self.cfg.get("loss", {}).get("global_photo", 0.0))
+                    if (
+                        global_photo_w > 0.0
+                        and out_fw.get("global_flow_fw")
+                        and out_fw.get("global_flow_bw")
+                    ):
+                        global_loss = self.base_loss.unsup_bidirectional(
+                            clip,
+                            out_fw["global_flow_fw"],
+                            out_fw["global_flow_bw"],
+                            use_occ_mask=use_occ_mask,
+                            long_gap_photo_weight=0.0,
+                            long_gap_consistency_weight=0.0,
+                        )
+                        total_loss = total_loss + global_photo_w * global_loss["total"]
+                        loss_dict["v5_global_photo"] = float(global_loss["total"].detach())
+                        loss_dict["v5_global_photo_w"] = float(global_photo_w)
 
                     slot_photo_w = float(self.cfg.get("loss", {}).get("slot_photo", 0.0))
                     if (
@@ -1357,6 +1414,136 @@ class SegmentAwareTrainer:
                                 sam_masks=segment_masks,
                                 sam_features=sam_features,
                                 return_losses=False,
+                                enable_residual_branch=enable_residual_branch,
+                            )
+                        distill_loss = self._compute_distill_loss(out_fw, teacher_out)
+                        if distill_loss is not None:
+                            total_loss = total_loss + self.teacher_distill_weight * distill_loss
+                            loss_dict["distill"] = float(distill_loss.detach())
+
+                elif isinstance(self.model, AniFlowFormerTV6):
+                    enable_residual_branch = self._runtime_overrides["enable_residual_branch"] is not False
+                    enable_global_matcher = self._runtime_overrides["enable_global_matcher"] is not False
+                    enable_local_refine = self._runtime_overrides["enable_local_refine"] is not False
+                    enable_visibility_composite = self._runtime_overrides["enable_visibility_composite"] is not False
+                    out_fw = self.model(
+                        clip,
+                        sam_masks=segment_masks,
+                        sam_features=sam_features,
+                        return_losses=True,
+                        enable_global_matcher=enable_global_matcher,
+                        enable_local_refine=enable_local_refine,
+                        enable_visibility_composite=enable_visibility_composite,
+                        enable_residual_branch=enable_residual_branch,
+                    )
+                    flows_fw = out_fw["flows_fw"]
+                    flows_bw = out_fw["flows_bw"]
+                    if self.nan_guard_enabled:
+                        flows_fw, bad_fw = self._sanitize_tensor_list(flows_fw)
+                        flows_bw, bad_bw = self._sanitize_tensor_list(flows_bw)
+                        out_fw["flows_fw"] = flows_fw
+                        out_fw["flows_bw"] = flows_bw
+                        bad_total = bad_fw + bad_bw
+                        for key in (
+                            "flows_long",
+                            "slot_flow_fw",
+                            "global_flow_fw",
+                            "fused_coarse_flow_fw",
+                            "dense_prior_flow_fw",
+                            "residual_flow_fw",
+                        ):
+                            if out_fw.get(key):
+                                out_fw[key], bad = self._sanitize_tensor_list(out_fw[key])
+                                bad_total += bad
+                        if bad_total > 0 and self._nan_warn_count < 20:
+                            print(
+                                f"[NaNGuard] Sanitized {bad_total} non-finite values "
+                                f"at epoch={self.current_epoch} step={self.global_step}"
+                            )
+                            self._nan_warn_count += 1
+
+                    use_occ_mask = not (
+                        self.disable_occ_during_warmup and self.global_step < self.warmup_steps
+                    )
+                    use_occ_mask = use_occ_mask and (self.current_epoch >= self.occ_aware_start_epoch)
+                    if self._runtime_overrides["enable_occ_aware"] is False:
+                        use_occ_mask = False
+                    if self._runtime_overrides["enable_occ_aware"] is True:
+                        use_occ_mask = not (
+                            self.disable_occ_during_warmup and self.global_step < self.warmup_steps
+                        )
+
+                    long_gap_photo_w, long_gap_cons_w = self._current_long_gap_weights()
+                    if self._runtime_overrides["enable_long_gap"] is False:
+                        long_gap_photo_w, long_gap_cons_w = 0.0, 0.0
+                    loss_dict = self.base_loss.unsup_bidirectional(
+                        clip,
+                        flows_fw,
+                        flows_bw,
+                        use_occ_mask=use_occ_mask,
+                        long_gap_photo_weight=long_gap_photo_w,
+                        long_gap_consistency_weight=long_gap_cons_w,
+                    )
+                    loss_dict["long_gap_photo_w"] = long_gap_photo_w
+                    loss_dict["long_gap_cons_w"] = long_gap_cons_w
+                    total_loss = loss_dict["total"]
+
+                    if self.v6_loss_bundle is not None and segment_masks is not None:
+                        v6_losses = self.v6_loss_bundle(
+                            sam_masks=segment_masks,
+                            model_out=out_fw,
+                            enable_segment_cycle=self._runtime_overrides["enable_segment_cycle"] is not False,
+                            enable_visibility_terms=self._runtime_overrides["enable_visibility_composite"] is not False,
+                            enable_residual_terms=enable_residual_branch,
+                            enable_hard_motion_reweight=self._runtime_overrides["enable_hard_motion_reweight"] is not False,
+                        )
+                        total_loss = total_loss + v6_losses["total"]
+                        for key, value in v6_losses.items():
+                            loss_dict[f"v6_{key}"] = float(value.detach())
+
+                    global_photo_w = float(self.cfg.get("loss", {}).get("global_photo", 0.0))
+                    if global_photo_w > 0.0 and out_fw.get("global_flow_fw") and out_fw.get("global_flow_bw"):
+                        global_loss = self.base_loss.unsup_bidirectional(
+                            clip,
+                            out_fw["global_flow_fw"],
+                            out_fw["global_flow_bw"],
+                            use_occ_mask=use_occ_mask,
+                            long_gap_photo_weight=0.0,
+                            long_gap_consistency_weight=0.0,
+                        )
+                        total_loss = total_loss + global_photo_w * global_loss["total"]
+                        loss_dict["v6_global_photo"] = float(global_loss["total"].detach())
+                        loss_dict["v6_global_photo_w"] = float(global_photo_w)
+
+                    slot_photo_w = float(self.cfg.get("loss", {}).get("slot_photo", 0.0))
+                    if slot_photo_w > 0.0 and out_fw.get("slot_flow_fw") and out_fw.get("slot_flow_bw"):
+                        slot_loss = self.base_loss.unsup_bidirectional(
+                            clip,
+                            out_fw["slot_flow_fw"],
+                            out_fw["slot_flow_bw"],
+                            use_occ_mask=use_occ_mask,
+                            long_gap_photo_weight=0.0,
+                            long_gap_consistency_weight=0.0,
+                        )
+                        total_loss = total_loss + slot_photo_w * slot_loss["total"]
+                        loss_dict["v6_slot_photo"] = float(slot_loss["total"].detach())
+                        loss_dict["v6_slot_photo_w"] = float(slot_photo_w)
+
+                    if (
+                        self.teacher_model is not None
+                        and self.teacher_distill_weight > 0
+                        and self.global_step >= self.teacher_start_step
+                        and (self.global_step % self.teacher_every_n_steps == 0)
+                    ):
+                        with torch.no_grad():
+                            teacher_out = self.teacher_model(
+                                clip,
+                                sam_masks=segment_masks,
+                                sam_features=sam_features,
+                                return_losses=False,
+                                enable_global_matcher=enable_global_matcher,
+                                enable_local_refine=enable_local_refine,
+                                enable_visibility_composite=enable_visibility_composite,
                                 enable_residual_branch=enable_residual_branch,
                             )
                         distill_loss = self._compute_distill_loss(out_fw, teacher_out)
@@ -1514,21 +1701,91 @@ class SegmentAwareTrainer:
                 if model_out.get("slot_flow_fw"):
                     slot = model_out["slot_flow_fw"][0].detach()
                     slot_mag = (slot[:, 0] ** 2 + slot[:, 1] ** 2).sqrt()
-                    self.writer.add_scalar("train_v5/slot_mag_mean", slot_mag.mean().item(), step)
+                    debug_branch = model_out.get("debug_branch", "")
+                    if debug_branch == "v5_3":
+                        tag_prefix = "train_v5_3"
+                    elif debug_branch == "v5_2":
+                        tag_prefix = "train_v5_2"
+                    elif model_out.get("global_flow_fw") and model_out.get("local_corr_confidence_fw"):
+                        tag_prefix = "train_v6"
+                    else:
+                        tag_prefix = "train_v5"
+                    self.writer.add_scalar(f"{tag_prefix}/slot_mag_mean", slot_mag.mean().item(), step)
                 if model_out.get("dense_prior_flow_fw"):
                     dense_prior = model_out["dense_prior_flow_fw"][0].detach()
                     dense_prior_mag = (dense_prior[:, 0] ** 2 + dense_prior[:, 1] ** 2).sqrt()
-                    self.writer.add_scalar("train_v5/dense_prior_mag_mean", dense_prior_mag.mean().item(), step)
+                    debug_branch = model_out.get("debug_branch", "")
+                    if debug_branch == "v5_3":
+                        tag_prefix = "train_v5_3"
+                    elif debug_branch == "v5_2":
+                        tag_prefix = "train_v5_2"
+                    elif model_out.get("global_flow_fw") and model_out.get("local_corr_confidence_fw"):
+                        tag_prefix = "train_v6"
+                    else:
+                        tag_prefix = "train_v5"
+                    self.writer.add_scalar(f"{tag_prefix}/dense_prior_mag_mean", dense_prior_mag.mean().item(), step)
                 if model_out.get("residual_flow_fw"):
                     residual = model_out["residual_flow_fw"][0].detach()
                     residual_mag = (residual[:, 0] ** 2 + residual[:, 1] ** 2).sqrt()
-                    self.writer.add_scalar("train_v5/residual_mag_mean", residual_mag.mean().item(), step)
+                    debug_branch = model_out.get("debug_branch", "")
+                    if debug_branch == "v5_3":
+                        tag_prefix = "train_v5_3"
+                    elif debug_branch == "v5_2":
+                        tag_prefix = "train_v5_2"
+                    elif model_out.get("global_flow_fw") and model_out.get("local_corr_confidence_fw"):
+                        tag_prefix = "train_v6"
+                    else:
+                        tag_prefix = "train_v5"
+                    self.writer.add_scalar(f"{tag_prefix}/residual_mag_mean", residual_mag.mean().item(), step)
                 if model_out.get("corr_confidence_fw"):
                     corr_conf = model_out["corr_confidence_fw"][0].detach()
                     self.writer.add_scalar("train_v5/corr_conf_mean", corr_conf.mean().item(), step)
                 if model_out.get("match_confidence_fw"):
                     match_conf = model_out["match_confidence_fw"][0].detach()
-                    self.writer.add_scalar("train_v5/match_conf_mean", match_conf.mean().item(), step)
+                    debug_branch = model_out.get("debug_branch", "")
+                    if debug_branch == "v5_3":
+                        tag_prefix = "train_v5_3"
+                    elif debug_branch == "v5_2":
+                        tag_prefix = "train_v5_2"
+                    elif model_out.get("global_flow_fw") and model_out.get("local_corr_confidence_fw"):
+                        tag_prefix = "train_v6"
+                    else:
+                        tag_prefix = "train_v5"
+                    self.writer.add_scalar(f"{tag_prefix}/match_conf_mean", match_conf.mean().item(), step)
+                if model_out.get("global_flow_fw"):
+                    global_flow = model_out["global_flow_fw"][0].detach()
+                    global_mag = (global_flow[:, 0] ** 2 + global_flow[:, 1] ** 2).sqrt()
+                    debug_branch = model_out.get("debug_branch", "")
+                    tag_prefix = "train_v5_3" if debug_branch == "v5_3" else ("train_v5_2" if debug_branch == "v5_2" else "train_v6")
+                    self.writer.add_scalar(f"{tag_prefix}/global_mag_mean", global_mag.mean().item(), step)
+                if model_out.get("fused_coarse_flow_fw"):
+                    fused = model_out["fused_coarse_flow_fw"][0].detach()
+                    fused_mag = (fused[:, 0] ** 2 + fused[:, 1] ** 2).sqrt()
+                    debug_branch = model_out.get("debug_branch", "")
+                    tag_prefix = "train_v5_3" if debug_branch == "v5_3" else ("train_v5_2" if debug_branch == "v5_2" else "train_v6")
+                    self.writer.add_scalar(f"{tag_prefix}/fused_coarse_mag_mean", fused_mag.mean().item(), step)
+                if model_out.get("global_corr_confidence_fw"):
+                    global_conf = model_out["global_corr_confidence_fw"][0].detach()
+                    debug_branch = model_out.get("debug_branch", "")
+                    tag_prefix = "train_v5_3" if debug_branch == "v5_3" else ("train_v5_2" if debug_branch == "v5_2" else "train_v6")
+                    self.writer.add_scalar(f"{tag_prefix}/global_conf_mean", global_conf.mean().item(), step)
+                if model_out.get("slot_basis_coeffs_fw"):
+                    coeff = model_out["slot_basis_coeffs_fw"][0].detach()
+                    if coeff.numel() > 0:
+                        coeff_energy = coeff.pow(2).mean().item()
+                        debug_branch = model_out.get("debug_branch", "")
+                        tag_prefix = "train_v5_3" if debug_branch == "v5_3" else "train_v5"
+                        self.writer.add_scalar(f"{tag_prefix}/slot_basis_energy", coeff_energy, step)
+                if model_out.get("local_corr_confidence_fw"):
+                    local_conf = model_out["local_corr_confidence_fw"][0].detach()
+                    self.writer.add_scalar("train_v6/local_conf_mean", local_conf.mean().item(), step)
+                    self.writer.add_scalar("train_v6/local_refine_mag_mean", dense_prior_mag.mean().item(), step)
+                if model_out.get("slot_visibility_fw"):
+                    vis = model_out["slot_visibility_fw"][0].detach()
+                    self.writer.add_scalar("train_v6/visible_slot_ratio", vis.mean().item(), step)
+                if model_out.get("dense_occlusion_fw"):
+                    occ = model_out["dense_occlusion_fw"][0].detach()
+                    self.writer.add_scalar("train_v6/occlusion_ratio", occ.mean().item(), step)
         
         # Segment statistics
         if self.log_segment_stats and segment_masks is not None:

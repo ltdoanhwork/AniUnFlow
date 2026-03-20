@@ -1,0 +1,23 @@
+{
+  "scene": "cami_02_05_A",
+  "records": [
+    {
+      "scene": "cami_02_05_A",
+      "center": 31,
+      "frame": "0306",
+      "panel_path": "demo/v5_1_object_memory_dense_parallel_v4_compare/panels/cami_02_05_A_compare_0031_0306.png",
+      "ours_epe": 199.35418701171875,
+      "object_epe": 200.5986328125,
+      "upflow_epe": 200.33914184570312
+    },
+    {
+      "scene": "cami_02_05_A",
+      "center": 6,
+      "frame": "0281",
+      "panel_path": "demo/v5_1_object_memory_dense_parallel_v4_compare/panels/cami_02_05_A_compare_0006_0281.png",
+      "ours_epe": 6.262332439422607,
+      "object_epe": 6.809347152709961,
+      "upflow_epe": 6.952662944793701
+    }
+  ]
+}
