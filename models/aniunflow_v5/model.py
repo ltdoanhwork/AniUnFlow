@@ -430,8 +430,14 @@ class AniFlowFormerTV5(nn.Module):
         )
         x = xs.view(1, 1, h, w)
         y = ys.view(1, 1, h, w)
-        u = affine[:, :, 0:1, None] * x + affine[:, :, 1:2, None] * y + affine[:, :, 2:3, None]
-        v = affine[:, :, 3:4, None] * x + affine[:, :, 4:5, None] * y + affine[:, :, 5:6, None]
+        a0 = affine[:, :, 0].unsqueeze(-1).unsqueeze(-1)
+        a1 = affine[:, :, 1].unsqueeze(-1).unsqueeze(-1)
+        a2 = affine[:, :, 2].unsqueeze(-1).unsqueeze(-1)
+        a3 = affine[:, :, 3].unsqueeze(-1).unsqueeze(-1)
+        a4 = affine[:, :, 4].unsqueeze(-1).unsqueeze(-1)
+        a5 = affine[:, :, 5].unsqueeze(-1).unsqueeze(-1)
+        u = a0 * x + a1 * y + a2
+        v = a3 * x + a4 * y + a5
         basis_coeff = None
         if self.use_deformable_slots and self.model_cfg.slot_basis_count > 0 and params.shape[-1] > 6:
             basis_count = self.model_cfg.slot_basis_count
@@ -439,10 +445,9 @@ class AniFlowFormerTV5(nn.Module):
             basis = self._basis_maps(h, w, labels.device, params.dtype)
             basis_u = torch.einsum("bsk,khw->bshw", basis_coeff[:, :, 0], basis)
             basis_v = torch.einsum("bsk,khw->bshw", basis_coeff[:, :, 1], basis)
-            u = u + self.model_cfg.slot_basis_scale * basis_u.unsqueeze(2)
-            v = v + self.model_cfg.slot_basis_scale * basis_v.unsqueeze(2)
-        slot_flow = torch.cat([u, v], dim=2)
-        slot_flow = slot_flow.view(b, s, 2, h, w)
+            u = u + self.model_cfg.slot_basis_scale * basis_u
+            v = v + self.model_cfg.slot_basis_scale * basis_v
+        slot_flow = torch.stack([u, v], dim=2)
         one_hot = F.one_hot(labels.clamp(min=0, max=s), num_classes=s + 1)[..., 1:].permute(0, 3, 1, 2).float()
         flow = torch.einsum("bshw,bschw->bchw", one_hot, slot_flow)
         flow[:, 0] *= w * 0.5

@@ -264,7 +264,7 @@ class V5ObjectMemoryLossBundle(nn.Module):
         for k in range(limit):
             coeff = basis_coeffs[k]
             conf = match_conf[k].clamp(0.0, 1.0)
-            energy = coeff.pow(2).mean(dim=-1)
+            energy = coeff.pow(2).mean(dim=(-1, -2))
             losses.append((energy * (1.0 - conf)).mean())
         if not losses:
             device = basis_coeffs[0].device if basis_coeffs else "cpu"
