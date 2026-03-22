@@ -174,6 +174,7 @@ class AniFlowFormerTV5(nn.Module):
         self.use_dense_correlation = self.backbone.startswith("v5_1") or "dense" in self.backbone
         self.use_global_matcher = self.backbone.startswith("v5_2") or "global" in self.backbone
         self.use_deformable_slots = self.backbone.startswith("v5_3") or "deform" in self.backbone
+        self.use_sam_propagation_memory = self.backbone.startswith("v5_4") or "sam_propagation" in self.backbone
 
         c = self.model_cfg.enc_channels
         d = self.model_cfg.slot_dim
@@ -448,6 +449,25 @@ class AniFlowFormerTV5(nn.Module):
         one_hot = one_hot.permute(0, 3, 1, 2).float()
         return torch.einsum("bshw,bs->bhw", one_hot, slot_values).unsqueeze(1)
 
+    def _sam_memory_agreement(
+        self,
+        prev_labels: torch.Tensor,
+        curr_labels: torch.Tensor,
+        prev_flow: torch.Tensor,
+    ) -> torch.Tensor:
+        num_slots = self.model_cfg.num_slots
+        h, w = curr_labels.shape[-2:]
+        if prev_labels.shape[-2:] != (h, w):
+            prev_labels = F.interpolate(prev_labels.unsqueeze(1).float(), size=(h, w), mode="nearest").squeeze(1).long()
+        if prev_flow.shape[-2:] != (h, w):
+            prev_flow = resize_flow(prev_flow, (h, w))
+        prev_one_hot = F.one_hot(prev_labels.clamp(min=0, max=num_slots), num_classes=num_slots + 1)[..., 1:].permute(0, 3, 1, 2).float()
+        curr_one_hot = F.one_hot(curr_labels.clamp(min=0, max=num_slots), num_classes=num_slots + 1)[..., 1:].permute(0, 3, 1, 2).float()
+        warped_prev = warp(prev_one_hot, prev_flow)
+        overlap = (warped_prev * curr_one_hot).sum(dim=1, keepdim=True).clamp(0.0, 1.0)
+        valid = (curr_labels > 0).unsqueeze(1).float()
+        return overlap * valid + (1.0 - valid)
+
     def _basis_maps(self, h: int, w: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
         ys, xs = torch.meshgrid(
             torch.linspace(-1.0, 1.0, h, device=device, dtype=dtype),
@@ -538,6 +558,7 @@ class AniFlowFormerTV5(nn.Module):
         labels_b_l2: torch.Tensor,
         prev_labels_a_l1: Optional[torch.Tensor],
         next_labels_b_l1: Optional[torch.Tensor],
+        memory_agreement: Optional[torch.Tensor],
         boundary: Optional[torch.Tensor],
         enable_residual_branch: bool,
         deform_scale_override: Optional[float] = None,
@@ -575,6 +596,17 @@ class AniFlowFormerTV5(nn.Module):
             basis_scale_override=deform_scale_override,
         )
         conf_map_l2 = self._slot_scalar_map(labels_a_l2, conf)
+        memory_conf_l1 = None
+        if self.use_sam_propagation_memory and memory_agreement is not None:
+            memory_conf_l1 = (
+                self.model_cfg.sam_memory_mix
+                * (
+                    self.model_cfg.sam_memory_floor
+                    + (1.0 - self.model_cfg.sam_memory_floor) * memory_agreement.clamp(0.0, 1.0)
+                )
+            )
+            memory_conf_l2 = F.interpolate(memory_conf_l1, size=conf_map_l2.shape[-2:], mode="bilinear", align_corners=False)
+            conf_map_l2 = torch.maximum(conf_map_l2, memory_conf_l2)
         global_flow_l2 = torch.zeros_like(slot_flow_l2)
         global_conf_l2 = torch.zeros_like(conf_map_l2)
         fused_coarse_l2 = slot_flow_l2
@@ -614,6 +646,8 @@ class AniFlowFormerTV5(nn.Module):
         dense_prior_up = resize_flow(dense_prior_l2, feat_a_l1.shape[-2:])
         corr_conf_up = F.interpolate(corr_conf_l2, size=feat_a_l1.shape[-2:], mode="bilinear", align_corners=False)
         conf_map_l1 = self._slot_scalar_map(labels_a_l1, conf)
+        if memory_conf_l1 is not None:
+            conf_map_l1 = torch.maximum(conf_map_l1, memory_conf_l1)
         global_flow_l1 = resize_flow(global_flow_l2, feat_a_l1.shape[-2:])
         global_conf_l1 = F.interpolate(global_conf_l2, size=feat_a_l1.shape[-2:], mode="bilinear", align_corners=False)
         if self.use_dense_correlation and self.l1_matcher is not None:
@@ -633,7 +667,11 @@ class AniFlowFormerTV5(nn.Module):
         boundary_l1 = boundary if boundary is not None else torch.zeros_like(conf_map_l1)
         if boundary_l1.shape[-2:] != feat_a_l1.shape[-2:]:
             boundary_l1 = F.interpolate(boundary_l1, size=feat_a_l1.shape[-2:], mode="nearest")
+        if self.use_sam_propagation_memory and memory_agreement is not None:
+            boundary_l1 = torch.maximum(boundary_l1, self.model_cfg.sam_memory_mix * (1.0 - memory_agreement.clamp(0.0, 1.0)))
         refiner_conf = 0.5 * (conf_map_l1 + corr_conf) if self.use_dense_correlation else conf_map_l1
+        if memory_conf_l1 is not None:
+            refiner_conf = torch.maximum(refiner_conf, memory_conf_l1)
         if enable_residual_branch:
             residual = self.residual_refiner(feat_a_l1, feat_b_l1, dense_prior, boundary_l1, refiner_conf)
             residual_gate = boundary_l1 * self.model_cfg.residual_boundary_scale + self.model_cfg.residual_base_scale
@@ -664,6 +702,7 @@ class AniFlowFormerTV5(nn.Module):
                 float(self.model_cfg.slot_basis_scale if deform_scale_override is None else deform_scale_override),
             ),
             "temporal_support": temporal_support,
+            "sam_memory_agreement": memory_agreement if memory_agreement is not None else conf_map_l1.new_ones(conf_map_l1.shape),
             "layer_order": order,
             "occlusion_slots": occ,
         }
@@ -701,14 +740,24 @@ class AniFlowFormerTV5(nn.Module):
             "slot_basis_coeffs": [],
             "deform_basis_scale": [],
             "temporal_support": [],
+            "sam_memory_agreement": [],
             "layer_order": [],
             "occlusion_slots": [],
             "match_probs_long": [],
             "layer_order_all": [slots_mem.new_zeros((slots_mem.shape[0], slots_mem.shape[2])) for _ in range(slots_mem.shape[1])],
         }
 
+        prev_flow_for_memory: Optional[torch.Tensor] = None
+        prev_labels_for_memory: Optional[torch.Tensor] = None
         for k in range(clip.shape[1] - 1):
             boundary_k = boundary_maps[:, k] if boundary_maps is not None else None
+            memory_agreement = None
+            if self.use_sam_propagation_memory and prev_flow_for_memory is not None and prev_labels_for_memory is not None:
+                memory_agreement = self._sam_memory_agreement(
+                    prev_labels_for_memory,
+                    labels_l1_all[k],
+                    prev_flow_for_memory,
+                )
             pair_out = self._pair_flow(
                 feats_levels[0][k],
                 feats_levels[0][k + 1],
@@ -722,6 +771,7 @@ class AniFlowFormerTV5(nn.Module):
                 labels_l2_all[k + 1],
                 labels_l1_all[k - 1] if k > 0 else None,
                 labels_l1_all[k + 2] if (k + 2) < clip.shape[1] else None,
+                memory_agreement,
                 boundary_k,
                 enable_residual_branch=enable_residual_branch,
                 deform_scale_override=deform_scale_override,
@@ -742,10 +792,14 @@ class AniFlowFormerTV5(nn.Module):
                 "slot_basis_coeffs",
                 "deform_basis_scale",
                 "temporal_support",
+                "sam_memory_agreement",
                 "layer_order",
                 "occlusion_slots",
             ):
                 outputs[key if key != "flow" else "flows"].append(pair_out[key])
+            if self.use_sam_propagation_memory:
+                prev_flow_for_memory = pair_out["flow"].detach()
+                prev_labels_for_memory = labels_l1_all[k]
             outputs["layer_order_all"][k] = pair_out["layer_order"]
             if k == clip.shape[1] - 2:
                 outputs["layer_order_all"][k + 1] = torch.matmul(
@@ -825,7 +879,9 @@ class AniFlowFormerTV5(nn.Module):
             "deform_basis_scale_bw": [],
             "temporal_support_fw": out_fw["temporal_support"],
             "temporal_support_bw": [],
-            "debug_branch": "v5_3b" if self.backbone.startswith("v5_3b") else ("v5_3" if self.use_deformable_slots else ("v5_2" if self.use_global_matcher else ("v5_1" if self.use_dense_correlation else "v5"))),
+            "sam_memory_agreement_fw": out_fw["sam_memory_agreement"],
+            "sam_memory_agreement_bw": [],
+            "debug_branch": "v5_4" if self.backbone.startswith("v5_4") else ("v5_3b" if self.backbone.startswith("v5_3b") else ("v5_3" if self.use_deformable_slots else ("v5_2" if self.use_global_matcher else ("v5_1" if self.use_dense_correlation else "v5")))),
         }
 
         if return_losses:
@@ -861,5 +917,6 @@ class AniFlowFormerTV5(nn.Module):
             outputs["slot_basis_coeffs_bw"] = [out_bw["slot_basis_coeffs"][n - 1 - i] for i in range(n)]
             outputs["deform_basis_scale_bw"] = [out_bw["deform_basis_scale"][n - 1 - i] for i in range(n)]
             outputs["temporal_support_bw"] = [out_bw["temporal_support"][n - 1 - i] for i in range(n)]
+            outputs["sam_memory_agreement_bw"] = [out_bw["sam_memory_agreement"][n - 1 - i] for i in range(n)]
 
         return outputs

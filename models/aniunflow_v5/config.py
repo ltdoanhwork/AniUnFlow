@@ -40,6 +40,7 @@ class V5LossConfig:
     global_photo: float = 0.0
     global_dense_consistency: float = 0.0
     slot_deformation_reg: float = 0.0
+    sam_memory_consistency: float = 0.0
 
     long_gap_photo_weight: float = 0.08
     long_gap_consistency_weight: float = 0.03
@@ -61,6 +62,8 @@ class V5ModelConfig:
     overlap_prior_weight: float = 2.0
     temporal_sam_support_weight: float = 0.0
     temporal_sam_support_floor: float = 0.2
+    sam_memory_mix: float = 0.0
+    sam_memory_floor: float = 0.2
     use_long_gap_matching: bool = True
     predict_layer_order: bool = True
     slot_basis_count: int = 0
