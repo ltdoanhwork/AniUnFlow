@@ -100,6 +100,8 @@ def infer_family(run_dir: Path, cfg: Dict[str, Any]) -> str:
     backbone = str(model_cfg.get("backbone", "")).lower() if isinstance(model_cfg, dict) else ""
     if "v6_global_slot_search" in path_lower or "v6_global_slot_search" in backbone or backbone.startswith("v6_"):
         return "AniFlowFormerTV6"
+    if "v5_3b_object_memory_deformable_global" in path_lower or "v5_3b_object_memory_deformable_global" in backbone:
+        return "AniFlowFormerTV5.3b"
     if "v5_3_object_memory_deformable_global" in path_lower or "v5_3_object_memory_deformable_global" in backbone:
         return "AniFlowFormerTV5.3"
     if "v5_2_object_memory_global" in path_lower or "v5_2_object_memory_global" in backbone:
@@ -140,6 +142,8 @@ def infer_research_branch(run_dir: Path, cfg: Dict[str, Any]) -> str:
 
     if "v6_global_slot_search" in path_lower or "v6_global_slot_search" in backbone or "aniflowformertv6" in model_name:
         return "V6 Global Slot Search"
+    if "v5_3b_object_memory_deformable_global" in path_lower or "v5_3b_object_memory_deformable_global" in backbone:
+        return "V5.3b Deformable Ramp Global"
     if "v5_3_object_memory_deformable_global" in path_lower or "v5_3_object_memory_deformable_global" in backbone:
         return "V5.3 Deformable Object Memory Global"
     if "v5_2_object_memory_global" in path_lower or "v5_2_object_memory_global" in backbone:

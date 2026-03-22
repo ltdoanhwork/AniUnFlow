@@ -89,6 +89,8 @@ Two large unsupervised directions now live side by side:
 - `V5 Object Memory`: SAM object slots first, affine/layered object motion first, dense residual correction second.
 - `V5.1 Object Memory Dense`: V5 object memory plus dense correlation and multi-scale dense refinement for large motion.
 - `V5.2 Object Memory Global`: V5.1 plus a lightweight coarse global matcher borrowed from the V6 analysis, without V6's heavier visibility and non-rigid branches.
+- `V5.3 Deformable Object Memory Global`: V5.2 plus deformable slot motion so each object can express non-rigid motion on top of the global matcher.
+- `V5.3b Deformable Ramp Global`: V5.3 plus delayed deformable slot motion, confidence-gated deformation, and temporal SAM support from neighboring frames.
 - `V6 Global Slot Search`: object memory plus non-rigid slot flow, coarse global large-motion search, visibility-aware compositing, and staged dense refinement.
 
 V5 documentation:
@@ -96,6 +98,8 @@ V5 documentation:
 - [docs/architecture_v5_object_memory.md](docs/architecture_v5_object_memory.md)
 - [docs/architecture_v5_1_object_memory_dense.md](docs/architecture_v5_1_object_memory_dense.md)
 - [docs/architecture_v5_2_object_memory_global.md](docs/architecture_v5_2_object_memory_global.md)
+- [docs/architecture_v5_3_object_memory_deformable_global.md](docs/architecture_v5_3_object_memory_deformable_global.md)
+- [docs/architecture_v5_3b_object_memory_deformable_global.md](docs/architecture_v5_3b_object_memory_deformable_global.md)
 - [docs/architecture_v6_global_slot_search.md](docs/architecture_v6_global_slot_search.md)
 - Main config: `configs/v5_object_memory_sam_parallel.yaml`
 - Dense follow-up config: `configs/v5_1_object_memory_dense_parallel.yaml`
@@ -110,6 +114,12 @@ python scripts/train_unsup_animerun.py --config configs/v5_1_object_memory_dense
 
 # Train V5.2 object-memory global branch
 python scripts/train_unsup_animerun.py --config configs/v5_2_object_memory_global.yaml
+
+# Train V5.3 deformable object-memory global branch
+python scripts/train_unsup_animerun.py --config configs/v5_3_object_memory_deformable_global.yaml
+
+# Train V5.3b delayed deformable object-memory global branch
+python scripts/train_unsup_animerun.py --config configs/v5_3b_object_memory_deformable_global.yaml
 
 # Train V6 global-slot-search branch
 python scripts/train_unsup_animerun.py --config configs/v6_global_slot_search_parallel.yaml

@@ -59,10 +59,15 @@ class V5ModelConfig:
     temporal_memory_dropout: float = 0.0
     num_slots: int = 32
     overlap_prior_weight: float = 2.0
+    temporal_sam_support_weight: float = 0.0
+    temporal_sam_support_floor: float = 0.2
     use_long_gap_matching: bool = True
     predict_layer_order: bool = True
     slot_basis_count: int = 0
     slot_basis_scale: float = 0.0
+    slot_basis_start_epoch: int = 1
+    slot_basis_ramp_epochs: int = 0
+    slot_basis_confidence_floor: float = 0.1
     slot_affine_scale: float = 0.25
     global_match_dim: int = 96
     global_downsample_factor: int = 2

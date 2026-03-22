@@ -394,6 +394,55 @@ class AniFlowFormerTV5(nn.Module):
         matched_slots = torch.matmul(probs, slots_b)
         return probs, conf, matched_slots
 
+    def _temporal_slot_support(
+        self,
+        labels_center: torch.Tensor,
+        labels_prev: Optional[torch.Tensor] = None,
+        labels_next: Optional[torch.Tensor] = None,
+    ) -> Optional[torch.Tensor]:
+        supports = []
+        if labels_prev is not None:
+            supports.append(self._mask_iou(labels_center, labels_prev).max(dim=-1).values)
+        if labels_next is not None:
+            supports.append(self._mask_iou(labels_center, labels_next).max(dim=-1).values)
+        if not supports:
+            return None
+        support = torch.stack(supports, dim=0).mean(dim=0)
+        floor = float(self.model_cfg.temporal_sam_support_floor)
+        return floor + (1.0 - floor) * support.clamp(0.0, 1.0)
+
+    def _apply_temporal_support(
+        self,
+        probs: torch.Tensor,
+        labels_a: torch.Tensor,
+        labels_b: torch.Tensor,
+        prev_labels_a: Optional[torch.Tensor] = None,
+        next_labels_b: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        weight = float(self.model_cfg.temporal_sam_support_weight)
+        if weight <= 0.0:
+            conf, _ = probs.max(dim=-1)
+            ones = torch.ones_like(conf)
+            return probs, conf, ones, ones
+
+        support_a = self._temporal_slot_support(labels_a, labels_prev=prev_labels_a)
+        support_b = self._temporal_slot_support(labels_b, labels_next=next_labels_b)
+        if support_a is None and support_b is None:
+            conf, _ = probs.max(dim=-1)
+            ones = torch.ones_like(conf)
+            return probs, conf, ones, ones
+        if support_a is None:
+            support_a = torch.ones((probs.shape[0], probs.shape[1]), device=probs.device, dtype=probs.dtype)
+        if support_b is None:
+            support_b = torch.ones((probs.shape[0], probs.shape[2]), device=probs.device, dtype=probs.dtype)
+
+        pair_support = torch.sqrt(support_a.unsqueeze(-1) * support_b.unsqueeze(1))
+        probs = probs * ((1.0 - weight) + weight * pair_support)
+        probs = probs / probs.sum(dim=-1, keepdim=True).clamp_min(1e-6)
+        conf, _ = probs.max(dim=-1)
+        temporal_support = 0.5 * (support_a + torch.matmul(probs, support_b.unsqueeze(-1)).squeeze(-1))
+        return probs, conf, temporal_support, support_b
+
     def _slot_scalar_map(self, labels: torch.Tensor, slot_values: torch.Tensor) -> torch.Tensor:
         one_hot = F.one_hot(labels.clamp(min=0, max=slot_values.shape[1]), num_classes=slot_values.shape[1] + 1)[..., 1:]
         one_hot = one_hot.permute(0, 3, 1, 2).float()
@@ -419,6 +468,8 @@ class AniFlowFormerTV5(nn.Module):
         self,
         labels: torch.Tensor,
         params: torch.Tensor,
+        slot_conf: Optional[torch.Tensor] = None,
+        basis_scale_override: Optional[float] = None,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         b, h, w = labels.shape
         s = params.shape[1]
@@ -445,8 +496,15 @@ class AniFlowFormerTV5(nn.Module):
             basis = self._basis_maps(h, w, labels.device, params.dtype)
             basis_u = torch.einsum("bsk,khw->bshw", basis_coeff[:, :, 0], basis)
             basis_v = torch.einsum("bsk,khw->bshw", basis_coeff[:, :, 1], basis)
-            u = u + self.model_cfg.slot_basis_scale * basis_u
-            v = v + self.model_cfg.slot_basis_scale * basis_v
+            basis_scale = float(self.model_cfg.slot_basis_scale) if basis_scale_override is None else float(basis_scale_override)
+            if slot_conf is not None:
+                conf_gate = slot_conf.clamp(0.0, 1.0).unsqueeze(-1).unsqueeze(-1)
+                conf_floor = float(self.model_cfg.slot_basis_confidence_floor)
+                conf_gate = conf_floor + (1.0 - conf_floor) * conf_gate
+            else:
+                conf_gate = 1.0
+            u = u + basis_scale * conf_gate * basis_u
+            v = v + basis_scale * conf_gate * basis_v
         slot_flow = torch.stack([u, v], dim=2)
         one_hot = F.one_hot(labels.clamp(min=0, max=s), num_classes=s + 1)[..., 1:].permute(0, 3, 1, 2).float()
         flow = torch.einsum("bshw,bschw->bchw", one_hot, slot_flow)
@@ -478,18 +536,44 @@ class AniFlowFormerTV5(nn.Module):
         labels_b_l1: torch.Tensor,
         labels_a_l2: torch.Tensor,
         labels_b_l2: torch.Tensor,
+        prev_labels_a_l1: Optional[torch.Tensor],
+        next_labels_b_l1: Optional[torch.Tensor],
         boundary: Optional[torch.Tensor],
         enable_residual_branch: bool,
+        deform_scale_override: Optional[float] = None,
     ) -> Dict[str, torch.Tensor]:
         probs, conf, matched_slots = self._match_slots(slots_a, slots_b, labels_a_l1, labels_b_l1)
+        temporal_support = torch.ones_like(conf)
+        if self.model_cfg.temporal_sam_support_weight > 0.0:
+            probs, conf, temporal_support, _ = self._apply_temporal_support(
+                probs,
+                labels_a_l1,
+                labels_b_l1,
+                prev_labels_a=prev_labels_a_l1,
+                next_labels_b=next_labels_b_l1,
+            )
+            matched_slots = torch.matmul(probs, slots_b)
         pair_feat = torch.cat([slots_a, matched_slots], dim=-1)
-        params = self.motion_head(pair_feat)
-        params = torch.tanh(params)
-        params[:, :, :6] = params[:, :, :6] * self.model_cfg.slot_affine_scale
+        params_raw = torch.tanh(self.motion_head(pair_feat))
+        if params_raw.shape[-1] > 6:
+            params = torch.cat(
+                [
+                    params_raw[:, :, :6] * self.model_cfg.slot_affine_scale,
+                    params_raw[:, :, 6:],
+                ],
+                dim=-1,
+            )
+        else:
+            params = params_raw * self.model_cfg.slot_affine_scale
         order = torch.tanh(self.order_head(pair_feat).squeeze(-1)) * 2.0
         occ = torch.sigmoid(self.occ_head(pair_feat).squeeze(-1))
 
-        slot_flow_l2, basis_coeff = self._slot_grid_flow(labels_a_l2, params)
+        slot_flow_l2, basis_coeff = self._slot_grid_flow(
+            labels_a_l2,
+            params,
+            slot_conf=conf,
+            basis_scale_override=deform_scale_override,
+        )
         conf_map_l2 = self._slot_scalar_map(labels_a_l2, conf)
         global_flow_l2 = torch.zeros_like(slot_flow_l2)
         global_conf_l2 = torch.zeros_like(conf_map_l2)
@@ -521,7 +605,12 @@ class AniFlowFormerTV5(nn.Module):
             gate_l2 = self._confidence_gate(l2_seed_conf, corr_conf_l2)
             dense_prior_l2 = fused_coarse_l2 + self.model_cfg.dense_update_scale_l2 * delta_l2 * gate_l2
 
-        slot_flow_l1, _ = self._slot_grid_flow(labels_a_l1, params)
+        slot_flow_l1, _ = self._slot_grid_flow(
+            labels_a_l1,
+            params,
+            slot_conf=conf,
+            basis_scale_override=deform_scale_override,
+        )
         dense_prior_up = resize_flow(dense_prior_l2, feat_a_l1.shape[-2:])
         corr_conf_up = F.interpolate(corr_conf_l2, size=feat_a_l1.shape[-2:], mode="bilinear", align_corners=False)
         conf_map_l1 = self._slot_scalar_map(labels_a_l1, conf)
@@ -570,6 +659,11 @@ class AniFlowFormerTV5(nn.Module):
             "global_corr_confidence": global_conf_l1.squeeze(1),
             "segment_params": params,
             "slot_basis_coeffs": basis_coeff if basis_coeff is not None else params.new_zeros((params.shape[0], params.shape[1], 2, 0)),
+            "deform_basis_scale": params.new_full(
+                (params.shape[0],),
+                float(self.model_cfg.slot_basis_scale if deform_scale_override is None else deform_scale_override),
+            ),
+            "temporal_support": temporal_support,
             "layer_order": order,
             "occlusion_slots": occ,
         }
@@ -580,6 +674,7 @@ class AniFlowFormerTV5(nn.Module):
         sam_masks: Optional[torch.Tensor],
         sam_features: Optional[Dict[int, torch.Tensor]],
         enable_residual_branch: bool,
+        deform_scale_override: Optional[float] = None,
     ) -> Dict[str, List[torch.Tensor]]:
         feats_levels, boundary_maps, mask_labels = self._extract_features(
             clip,
@@ -604,6 +699,8 @@ class AniFlowFormerTV5(nn.Module):
             "global_corr_confidence": [],
             "segment_params": [],
             "slot_basis_coeffs": [],
+            "deform_basis_scale": [],
+            "temporal_support": [],
             "layer_order": [],
             "occlusion_slots": [],
             "match_probs_long": [],
@@ -623,8 +720,11 @@ class AniFlowFormerTV5(nn.Module):
                 labels_l1_all[k + 1],
                 labels_l2_all[k],
                 labels_l2_all[k + 1],
+                labels_l1_all[k - 1] if k > 0 else None,
+                labels_l1_all[k + 2] if (k + 2) < clip.shape[1] else None,
                 boundary_k,
                 enable_residual_branch=enable_residual_branch,
+                deform_scale_override=deform_scale_override,
             )
             for key in (
                 "flow",
@@ -640,6 +740,8 @@ class AniFlowFormerTV5(nn.Module):
                 "global_corr_confidence",
                 "segment_params",
                 "slot_basis_coeffs",
+                "deform_basis_scale",
+                "temporal_support",
                 "layer_order",
                 "occlusion_slots",
             ):
@@ -670,6 +772,7 @@ class AniFlowFormerTV5(nn.Module):
         sam_features: Optional[Dict[int, torch.Tensor]] = None,
         return_losses: bool = False,
         enable_residual_branch: bool = True,
+        deform_scale_override: Optional[float] = None,
         **_: Dict,
     ) -> Dict[str, torch.Tensor]:
         out_fw = self._forward_single_direction(
@@ -677,6 +780,7 @@ class AniFlowFormerTV5(nn.Module):
             sam_masks=sam_masks,
             sam_features=sam_features,
             enable_residual_branch=enable_residual_branch,
+            deform_scale_override=deform_scale_override,
         )
         flows_long = []
         for k in range(max(0, len(out_fw["flows"]) - 1)):
@@ -717,7 +821,11 @@ class AniFlowFormerTV5(nn.Module):
             "coarse_flow_bw": [],
             "slot_basis_coeffs_fw": out_fw["slot_basis_coeffs"],
             "slot_basis_coeffs_bw": [],
-            "debug_branch": "v5_3" if self.use_deformable_slots else ("v5_2" if self.use_global_matcher else ("v5_1" if self.use_dense_correlation else "v5")),
+            "deform_basis_scale_fw": out_fw["deform_basis_scale"],
+            "deform_basis_scale_bw": [],
+            "temporal_support_fw": out_fw["temporal_support"],
+            "temporal_support_bw": [],
+            "debug_branch": "v5_3b" if self.backbone.startswith("v5_3b") else ("v5_3" if self.use_deformable_slots else ("v5_2" if self.use_global_matcher else ("v5_1" if self.use_dense_correlation else "v5"))),
         }
 
         if return_losses:
@@ -733,6 +841,7 @@ class AniFlowFormerTV5(nn.Module):
                 sam_masks=masks_bw,
                 sam_features=feats_bw,
                 enable_residual_branch=enable_residual_branch,
+                deform_scale_override=deform_scale_override,
             )
             n = len(out_bw["flows"])
             outputs["flows_bw"] = [out_bw["flows"][n - 1 - i] for i in range(n)]
@@ -750,5 +859,7 @@ class AniFlowFormerTV5(nn.Module):
             outputs["residual_flow_bw"] = [out_bw["residual_flow"][n - 1 - i] for i in range(n)]
             outputs["coarse_flow_bw"] = [out_bw["coarse_flow"][n - 1 - i] for i in range(n)]
             outputs["slot_basis_coeffs_bw"] = [out_bw["slot_basis_coeffs"][n - 1 - i] for i in range(n)]
+            outputs["deform_basis_scale_bw"] = [out_bw["deform_basis_scale"][n - 1 - i] for i in range(n)]
+            outputs["temporal_support_bw"] = [out_bw["temporal_support"][n - 1 - i] for i in range(n)]
 
         return outputs

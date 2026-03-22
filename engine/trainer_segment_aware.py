@@ -348,6 +348,23 @@ class SegmentAwareTrainer:
         self.nan_guard_flow_clip = float(cfg.get("runtime", {}).get("nan_guard_flow_clip", 5e2))
         self._nan_warn_count = 0
 
+    def _current_v5_deform_scale(self) -> Optional[float]:
+        if not isinstance(self.model, AniFlowFormerTV5):
+            return None
+        if not getattr(self.model, "use_deformable_slots", False):
+            return None
+        model_cfg = self.cfg.get("model", {})
+        max_scale = float(model_cfg.get("slot_basis_scale", 0.0))
+        start_epoch = int(model_cfg.get("slot_basis_start_epoch", 1))
+        ramp_epochs = int(model_cfg.get("slot_basis_ramp_epochs", 0))
+        if self.current_epoch < start_epoch:
+            return 0.0
+        if ramp_epochs <= 0:
+            return max_scale
+        progress = (self.current_epoch - start_epoch + 1) / float(ramp_epochs)
+        progress = max(0.0, min(1.0, progress))
+        return max_scale * progress
+
     def _current_sam_scale(self) -> float:
         """Epoch-based SAM loss scaling (for 2-stage training schedules)."""
         if self.current_epoch < self.sam_loss_start_epoch:
@@ -1288,12 +1305,14 @@ class SegmentAwareTrainer:
 
                 elif isinstance(self.model, AniFlowFormerTV5):
                     enable_residual_branch = self._runtime_overrides["enable_residual_branch"] is not False
+                    deform_scale_override = self._current_v5_deform_scale()
                     out_fw = self.model(
                         clip,
                         sam_masks=segment_masks,
                         sam_features=sam_features,
                         return_losses=True,
                         enable_residual_branch=enable_residual_branch,
+                        deform_scale_override=deform_scale_override,
                     )
                     flows_fw = out_fw["flows_fw"]
                     flows_bw = out_fw["flows_bw"]
@@ -1415,6 +1434,7 @@ class SegmentAwareTrainer:
                                 sam_features=sam_features,
                                 return_losses=False,
                                 enable_residual_branch=enable_residual_branch,
+                                deform_scale_override=deform_scale_override,
                             )
                         distill_loss = self._compute_distill_loss(out_fw, teacher_out)
                         if distill_loss is not None:
@@ -1702,7 +1722,9 @@ class SegmentAwareTrainer:
                     slot = model_out["slot_flow_fw"][0].detach()
                     slot_mag = (slot[:, 0] ** 2 + slot[:, 1] ** 2).sqrt()
                     debug_branch = model_out.get("debug_branch", "")
-                    if debug_branch == "v5_3":
+                    if debug_branch == "v5_3b":
+                        tag_prefix = "train_v5_3b"
+                    elif debug_branch == "v5_3":
                         tag_prefix = "train_v5_3"
                     elif debug_branch == "v5_2":
                         tag_prefix = "train_v5_2"
@@ -1715,7 +1737,9 @@ class SegmentAwareTrainer:
                     dense_prior = model_out["dense_prior_flow_fw"][0].detach()
                     dense_prior_mag = (dense_prior[:, 0] ** 2 + dense_prior[:, 1] ** 2).sqrt()
                     debug_branch = model_out.get("debug_branch", "")
-                    if debug_branch == "v5_3":
+                    if debug_branch == "v5_3b":
+                        tag_prefix = "train_v5_3b"
+                    elif debug_branch == "v5_3":
                         tag_prefix = "train_v5_3"
                     elif debug_branch == "v5_2":
                         tag_prefix = "train_v5_2"
@@ -1728,7 +1752,9 @@ class SegmentAwareTrainer:
                     residual = model_out["residual_flow_fw"][0].detach()
                     residual_mag = (residual[:, 0] ** 2 + residual[:, 1] ** 2).sqrt()
                     debug_branch = model_out.get("debug_branch", "")
-                    if debug_branch == "v5_3":
+                    if debug_branch == "v5_3b":
+                        tag_prefix = "train_v5_3b"
+                    elif debug_branch == "v5_3":
                         tag_prefix = "train_v5_3"
                     elif debug_branch == "v5_2":
                         tag_prefix = "train_v5_2"
@@ -1743,7 +1769,9 @@ class SegmentAwareTrainer:
                 if model_out.get("match_confidence_fw"):
                     match_conf = model_out["match_confidence_fw"][0].detach()
                     debug_branch = model_out.get("debug_branch", "")
-                    if debug_branch == "v5_3":
+                    if debug_branch == "v5_3b":
+                        tag_prefix = "train_v5_3b"
+                    elif debug_branch == "v5_3":
                         tag_prefix = "train_v5_3"
                     elif debug_branch == "v5_2":
                         tag_prefix = "train_v5_2"
@@ -1756,26 +1784,38 @@ class SegmentAwareTrainer:
                     global_flow = model_out["global_flow_fw"][0].detach()
                     global_mag = (global_flow[:, 0] ** 2 + global_flow[:, 1] ** 2).sqrt()
                     debug_branch = model_out.get("debug_branch", "")
-                    tag_prefix = "train_v5_3" if debug_branch == "v5_3" else ("train_v5_2" if debug_branch == "v5_2" else "train_v6")
+                    tag_prefix = "train_v5_3b" if debug_branch == "v5_3b" else ("train_v5_3" if debug_branch == "v5_3" else ("train_v5_2" if debug_branch == "v5_2" else "train_v6"))
                     self.writer.add_scalar(f"{tag_prefix}/global_mag_mean", global_mag.mean().item(), step)
                 if model_out.get("fused_coarse_flow_fw"):
                     fused = model_out["fused_coarse_flow_fw"][0].detach()
                     fused_mag = (fused[:, 0] ** 2 + fused[:, 1] ** 2).sqrt()
                     debug_branch = model_out.get("debug_branch", "")
-                    tag_prefix = "train_v5_3" if debug_branch == "v5_3" else ("train_v5_2" if debug_branch == "v5_2" else "train_v6")
+                    tag_prefix = "train_v5_3b" if debug_branch == "v5_3b" else ("train_v5_3" if debug_branch == "v5_3" else ("train_v5_2" if debug_branch == "v5_2" else "train_v6"))
                     self.writer.add_scalar(f"{tag_prefix}/fused_coarse_mag_mean", fused_mag.mean().item(), step)
                 if model_out.get("global_corr_confidence_fw"):
                     global_conf = model_out["global_corr_confidence_fw"][0].detach()
                     debug_branch = model_out.get("debug_branch", "")
-                    tag_prefix = "train_v5_3" if debug_branch == "v5_3" else ("train_v5_2" if debug_branch == "v5_2" else "train_v6")
+                    tag_prefix = "train_v5_3b" if debug_branch == "v5_3b" else ("train_v5_3" if debug_branch == "v5_3" else ("train_v5_2" if debug_branch == "v5_2" else "train_v6"))
                     self.writer.add_scalar(f"{tag_prefix}/global_conf_mean", global_conf.mean().item(), step)
                 if model_out.get("slot_basis_coeffs_fw"):
                     coeff = model_out["slot_basis_coeffs_fw"][0].detach()
                     if coeff.numel() > 0:
                         coeff_energy = coeff.pow(2).mean().item()
                         debug_branch = model_out.get("debug_branch", "")
-                        tag_prefix = "train_v5_3" if debug_branch == "v5_3" else "train_v5"
+                        tag_prefix = "train_v5_3b" if debug_branch == "v5_3b" else ("train_v5_3" if debug_branch == "v5_3" else "train_v5")
                         self.writer.add_scalar(f"{tag_prefix}/slot_basis_energy", coeff_energy, step)
+                if model_out.get("deform_basis_scale_fw"):
+                    deform_scale = model_out["deform_basis_scale_fw"][0].detach().mean().item()
+                    debug_branch = model_out.get("debug_branch", "")
+                    if debug_branch in {"v5_3", "v5_3b"}:
+                        tag_prefix = "train_v5_3b" if debug_branch == "v5_3b" else "train_v5_3"
+                        self.writer.add_scalar(f"{tag_prefix}/deform_basis_scale", deform_scale, step)
+                if model_out.get("temporal_support_fw"):
+                    temporal_support = model_out["temporal_support_fw"][0].detach()
+                    debug_branch = model_out.get("debug_branch", "")
+                    if debug_branch in {"v5_3", "v5_3b", "v5_2", "v5_1", "v5"}:
+                        tag_prefix = "train_v5_3b" if debug_branch == "v5_3b" else ("train_v5_3" if debug_branch == "v5_3" else ("train_v5_2" if debug_branch == "v5_2" else "train_v5"))
+                        self.writer.add_scalar(f"{tag_prefix}/temporal_support_mean", temporal_support.mean().item(), step)
                 if model_out.get("local_corr_confidence_fw"):
                     local_conf = model_out["local_corr_confidence_fw"][0].detach()
                     self.writer.add_scalar("train_v6/local_conf_mean", local_conf.mean().item(), step)
