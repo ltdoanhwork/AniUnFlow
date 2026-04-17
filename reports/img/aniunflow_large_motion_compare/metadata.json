@@ -1,0 +1,16 @@
+{
+  "scene": "cami_02_05_A",
+  "records": [
+    {
+      "scene": "cami_02_05_A",
+      "center": 31,
+      "frame": "0306",
+      "panel_path": "reports/img/aniunflow_large_motion_compare/panels/cami_02_05_A_compare_0031_0306.png",
+      "ours_label": "Large-motion-extension",
+      "reference_label": "AniUnFlow",
+      "ours_epe": 195.42587280273438,
+      "object_epe": 200.40621948242188,
+      "upflow_epe": 200.33914184570312
+    }
+  ]
+}

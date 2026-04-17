@@ -14,3 +14,4 @@
 /linktoanime/*
 work_dirs/*
 workspaces/*
+.venv_metrics/*

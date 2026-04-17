@@ -1,0 +1,39 @@
+{
+  "config_path": "/home/serverai/ltdoanh/AniUnFlow/workspaces/v5_4_sam_propagation_memory/config.yaml",
+  "checkpoint_path": "/home/serverai/ltdoanh/AniUnFlow/workspaces/v5_4_sam_propagation_memory/best.pth",
+  "scene": "cami_02_05_A",
+  "centers": [
+    2,
+    31,
+    43
+  ],
+  "records": [
+    {
+      "scene": "cami_02_05_A",
+      "center": 2,
+      "frame": "0277",
+      "panel_path": "reports/img/aniunflow_paper/panels/cami_02_05_A_center_0002_0277.png",
+      "mean_epe": 16.936237335205078,
+      "mean_gt_motion": 17.113079071044922,
+      "rad_max": 17.578213201293945
+    },
+    {
+      "scene": "cami_02_05_A",
+      "center": 31,
+      "frame": "0306",
+      "panel_path": "reports/img/aniunflow_paper/panels/cami_02_05_A_center_0031_0306.png",
+      "mean_epe": 200.4040069580078,
+      "mean_gt_motion": 200.3447265625,
+      "rad_max": 281.06101463867185
+    },
+    {
+      "scene": "cami_02_05_A",
+      "center": 43,
+      "frame": "0318",
+      "panel_path": "reports/img/aniunflow_paper/panels/cami_02_05_A_center_0043_0318.png",
+      "mean_epe": 13.160484313964844,
+      "mean_gt_motion": 12.899433135986328,
+      "rad_max": 14.060097203979492
+    }
+  ]
+}

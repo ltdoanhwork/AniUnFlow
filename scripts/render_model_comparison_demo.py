@@ -21,6 +21,7 @@ if str(ROOT) not in sys.path:
 
 from dataio.clip_dataset_unsup import UnlabeledClipDataset
 from models.aniunflow_v5 import AniFlowFormerTV5, V5Config
+from models.aniunflow_v6 import AniFlowFormerTV6, V6Config
 from utils.flow_viz import compute_flow_magnitude_radmax, flow_to_image
 
 
@@ -32,9 +33,17 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Render qualitative comparisons between Ours and weaker baselines.")
     parser.add_argument("--scene", default="cami_02_05_A")
     parser.add_argument("--centers", nargs="*", type=int, default=[31, 6])
+    parser.add_argument("--ours-config", default=str(ROOT / "workspaces" / "v5_4_sam_propagation_memory" / "config.yaml"))
+    parser.add_argument("--ours-checkpoint", default=str(ROOT / "workspaces" / "v5_4_sam_propagation_memory" / "best.pth"))
+    parser.add_argument("--ours-branch", choices=["auto", "main", "large_motion"], default="auto")
+    parser.add_argument("--ours-label", default="AniUnFlow")
+    parser.add_argument("--reference-config", default=str(ROOT / "workspaces" / "v5_object_memory_sam_parallel" / "config.yaml"))
+    parser.add_argument("--reference-checkpoint", default=str(ROOT / "workspaces" / "v5_object_memory_sam_parallel" / "best.pth"))
+    parser.add_argument("--reference-branch", choices=["auto", "main", "large_motion"], default="auto")
+    parser.add_argument("--reference-label", default="Object-memory baseline")
     parser.add_argument(
         "--output-dir",
-        default=str(ROOT / "demo" / "v5_1_object_memory_dense_parallel_v4_compare"),
+        default=str(ROOT / "demo" / "aniunflow_compare"),
     )
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     return parser.parse_args()
@@ -51,9 +60,20 @@ def patch_cfg(cfg: Dict[str, Any]) -> Dict[str, Any]:
     return cfg
 
 
-def load_v5_model(config_path: Path, checkpoint_path: Path, device: torch.device) -> AniFlowFormerTV5:
+def infer_branch(cfg: Dict[str, Any], branch_override: str) -> str:
+    if branch_override != "auto":
+        return branch_override
+    backbone = str(cfg.get("model", {}).get("backbone", "")).lower()
+    return "large_motion" if backbone.startswith("v6_") or "global_slot_search" in backbone else "main"
+
+
+def load_model(config_path: Path, checkpoint_path: Path, device: torch.device, branch_override: str) -> torch.nn.Module:
     cfg = patch_cfg(load_yaml(config_path))
-    model = AniFlowFormerTV5(V5Config.from_dict(cfg)).to(device).eval()
+    branch = infer_branch(cfg, branch_override)
+    if branch == "large_motion":
+        model = AniFlowFormerTV6(V6Config.from_dict(cfg)).to(device).eval()
+    else:
+        model = AniFlowFormerTV5(V5Config.from_dict(cfg)).to(device).eval()
     checkpoint = torch.load(checkpoint_path, map_location=device)
     state = checkpoint["state_dict"] if isinstance(checkpoint, dict) and "state_dict" in checkpoint else checkpoint
     current = model.state_dict()
@@ -202,16 +222,8 @@ def main() -> None:
         raise ValueError(f"Scene '{args.scene}' not found.")
     index_map = {tuple(item): idx for idx, item in enumerate(dataset.index)}
 
-    model_ours = load_v5_model(
-        ROOT / "workspaces" / "v5_1_object_memory_dense_parallel_v4" / "config.yaml",
-        ROOT / "workspaces" / "v5_1_object_memory_dense_parallel_v4" / "best.pth",
-        device,
-    )
-    model_object = load_v5_model(
-        ROOT / "workspaces" / "v5_object_memory_sam_parallel" / "config.yaml",
-        ROOT / "workspaces" / "v5_object_memory_sam_parallel" / "best.pth",
-        device,
-    )
+    model_ours = load_model(Path(args.ours_config), Path(args.ours_checkpoint), device, args.ours_branch)
+    model_object = load_model(Path(args.reference_config), Path(args.reference_checkpoint), device, args.reference_branch)
     model_upflow = load_upflow_model(device)
 
     records: List[Dict[str, Any]] = []
@@ -279,17 +291,17 @@ def main() -> None:
             ("Frame t", tensor_to_uint8_rgb(img1[0].cpu())),
             ("Frame t+1", tensor_to_uint8_rgb(img2[0].cpu())),
             ("GT flow", flow_to_rgb(gt_flow, rad_max)),
-            (f"Object baseline ({epe_object:.2f})", flow_to_rgb(pred_object_cpu, rad_max)),
+            (f"{args.reference_label} ({epe_object:.2f})", flow_to_rgb(pred_object_cpu, rad_max)),
             (f"UPFlow ({epe_upflow:.2f})", flow_to_rgb(pred_upflow_cpu, rad_max)),
-            (f"Ours ({epe_ours:.2f})", flow_to_rgb(pred_ours_cpu, rad_max)),
-            ("Object EPE", epe_to_rgb(pred_object_cpu, gt_flow, shared_epe_hi)),
+            (f"{args.ours_label} ({epe_ours:.2f})", flow_to_rgb(pred_ours_cpu, rad_max)),
+            (f"{args.reference_label} EPE", epe_to_rgb(pred_object_cpu, gt_flow, shared_epe_hi)),
             ("UPFlow EPE", epe_to_rgb(pred_upflow_cpu, gt_flow, shared_epe_hi)),
-            ("Ours EPE", epe_to_rgb(pred_ours_cpu, gt_flow, shared_epe_hi)),
+            (f"{args.ours_label} EPE", epe_to_rgb(pred_ours_cpu, gt_flow, shared_epe_hi)),
         ]
 
         title = f"{args.scene} | frame={frame_name} | center={center}"
         subtitle = (
-            f"Ours={epe_ours:.2f} px | Object baseline={epe_object:.2f} px | "
+            f"{args.ours_label}={epe_ours:.2f} px | {args.reference_label}={epe_object:.2f} px | "
             f"UPFlow={epe_upflow:.2f} px"
         )
         panel_path = output_dir / "panels" / f"{args.scene}_compare_{center:04d}_{frame_name}.png"
@@ -301,6 +313,8 @@ def main() -> None:
                 "center": center,
                 "frame": frame_name,
                 "panel_path": str(panel_path.relative_to(ROOT)),
+                "ours_label": args.ours_label,
+                "reference_label": args.reference_label,
                 "ours_epe": epe_ours,
                 "object_epe": epe_object,
                 "upflow_epe": epe_upflow,

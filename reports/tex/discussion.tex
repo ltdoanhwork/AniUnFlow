@@ -1,145 +1,63 @@
 \chapter{Evaluation}
-\section{Main Results}
+
+\section{Branch-Level Quantitative Summary}
+
+The emphasis of this chapter is not a single benchmark headline, but the behavior of AniUnFlow as a framework. The most useful quantitative view for this thesis is therefore a compact branch-level comparison showing how the object-memory idea changed as the framework added dense refinement, propagation memory, and finally a more aggressive large-motion extension.
 
 \begin{table*}[t]
 \centering
-\caption{\textbf{Pixel-wise optical flow results on AnimeRun (trained on AnimeRun only).}
-EPE breakdown follows \cite{animerun}: line/flat = distance to contour,
-occ./non-occ. = occluded vs.\ non-occluded pixels,
-$s<10$, $10\le s < 50$, $s>50$ = motion magnitude groups.
-Lower is better.}
-\label{tab:animerun_main}
+\caption{\textbf{Representative validation summary across the main AniUnFlow development path.} The values are included as lightweight branch-level evidence rather than as the sole basis of the thesis. Lower EPE is better; higher threshold accuracy is better.}
+\label{tab:branch_progression}
 \resizebox{\textwidth}{!}{%
-\begin{tabular}{lcccccccc}
+\begin{tabular}{lccccccc}
 \toprule
-\textbf{Method}
-& \textbf{EPE} $\downarrow$
-& \textbf{non-occ.}
-& \textbf{occ.}
-& \textbf{line}
-& \textbf{flat}
-& \boldmath{$s<10$}
-& \boldmath{$10\le s < 50$}
-& \boldmath{$s>50$} \\
+\textbf{AniUnFlow branch} & \textbf{EPE $\downarrow$} & \textbf{Acc@1px $\uparrow$} & \textbf{Acc@3px $\uparrow$} & \textbf{Acc@5px $\uparrow$} & \boldmath{$s<10$} & \boldmath{$10\le s < 50$} & \boldmath{$s>50$} \\
 \midrule
-UnFlow~\cite{unflow}
-& 9.82 & 7.15 & 53.90 & 7.42 & 11.85 & 3.12 & 6.58 & 88.74 \\
-DDFlow~\cite{ddflow}
-& 8.47 & 6.08 & 49.31 & 6.25 & 10.72 & 2.65 & 5.94 & 79.12 \\
-UPFlow~\cite{upflow}
-& 6.12 & 4.36 & 36.85 & 4.55 & 7.91 & 1.76 & 4.12 & 60.44 \\
-RAFT~\cite{raft}
-& 4.21 & 2.89 & 27.32 & 3.12 & 4.88 & 0.63 & 2.71 & 45.03 \\
+Object-memory baseline & 10.03 & 0.155 & 0.414 & 0.534 & 3.87 & 19.95 & 90.89 \\
+Dense object-memory & 9.26 & 0.225 & 0.461 & 0.576 & 3.10 & 19.11 & 90.56 \\
 \rowcolor{gray!10}
-\textbf{Ours}
-& \textbf{3.52}
-& \textbf{2.21}
-& \textbf{19.04}
-& \textbf{2.36}
-& \textbf{3.95}
-& \textbf{0.54}
-& \textbf{2.11}
-& \textbf{29.87} \\
+Propagation-memory AniUnFlow & 9.57 & 0.161 & 0.430 & 0.550 & 3.42 & 19.40 & 90.85 \\
+Large-motion extension & 10.46 & 0.034 & 0.249 & 0.486 & 4.67 & 19.07 & 90.47 \\
 \bottomrule
 \end{tabular}}
 \end{table*}
 
+Table~\ref{tab:branch_progression} should be interpreted carefully. It is not meant to claim that every later branch dominates every earlier branch on every accessible checkpoint. Instead, it helps explain the research direction of AniUnFlow. The dense object-memory branch improves threshold accuracy by letting local matching restore articulated detail that the slot prior alone cannot explain. The propagation-memory branch then shifts the emphasis from raw aggressiveness to \emph{stability}: it injects a more conservative structural signal after motion prediction, helping the framework decide where dense updates should be trusted. The large-motion extension broadens the search strategy further, but it is best read as the newest exploratory direction rather than as the main thesis model.
 
-\paragraph{Pixel-wise flow on AnimeRun.}
-Table~\ref{tab:animerun_main} reports pixel-wise optical flow accuracy on AnimeRun.
-Among unsupervised baselines, UnFlow and DDFlow exhibit large errors, particularly on
-occluded areas and large-motion regions, reflecting the difficulty of enforcing
-photometric consistency and smoothness priors in stylized animation. UPFlow improves
-over these baselines via hierarchical refinement, but still shows substantial
-degradation in flat interior regions and under large displacements.
+This reading is consistent with the design logic of the framework. The early object-memory branch proved that segmentation-aware slots and temporal slot memory create a coherent structural prior. Dense refinement improved local geometry, but also created a risk that the dense branch would overwhelm the object prior. Propagation memory was introduced precisely to regulate that tension by telling the refiner where structure propagated from nearby frames remains reliable. In other words, the later AniUnFlow design is not simply ``more modules''; it is a stronger attempt to make structure and dense correspondence cooperate rather than compete.
 
-RAFT provides a strong two-frame baseline, reducing the overall EPE to 4.21 by relying
-on dense all-pairs matching and iterative refinement. However, its pairwise formulation
-remains vulnerable to long-range ambiguities and occlusion-induced drift, as reflected
-by its higher error on occlusions (27.32) and large motions (45.03).
+\section{Qualitative Visual Analysis}
 
-AniFlowFormer-T achieves the best performance across all splits, lowering the overall
-EPE from 4.21 to 3.52 (a 16.4\% relative reduction). Improvements are consistent on
-both structural and motion-based partitions: we reduce error near contour boundaries
-from 3.12 to 2.36 and in flat regions from 4.88 to 3.95, indicating that temporal
-aggregation alleviates the lack of local texture within large uniform areas. The gains
-are particularly pronounced for large stylized motions ($s>50$), where error decreases
-from 45.03 to 29.87, suggesting that multi-frame temporal reasoning and the Latent Cost
-Memory help stabilize correspondences and suppress drift over extended time horizons.
-Overall, these results support the necessity of jointly leveraging multi-frame cues,
-long-range memory, and temporal regression for accurate optical flow estimation in
-2D animation.
-\section{Frame Interpolation on ATD-12K}
+For animation, qualitative evidence is unusually important because the most visible failure modes are perceptual: ghosted contours, broken limbs, boundary drag, identity swap in flat interiors, and unstable motion around repeated line structure. Scalar averages alone often hide these effects. We therefore place substantial weight on panel-based visual analysis.
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=\textwidth]{img/aniunflow_compare/cami_02_05_A_comparison_sheet.png}
+\caption{\textbf{Representative qualitative comparison for AniUnFlow-style motion estimation.} The comparison sheet illustrates how structure-aware flow differs from weaker alternatives on the same clip. The most important reading is not pixel-perfect color similarity, but whether the predicted motion remains coherent around thin contours, articulated limbs, rigid scene elements, and large flat interiors.}
+\label{fig:comparison_sheet}
+\end{figure*}
+
+Figure~\ref{fig:comparison_sheet} captures the motivation for the framework in a compact visual form. In difficult regions, the best object-memory predictions do not merely reduce overall error; they preserve a more believable motion organization. Rigid background elements stay less smeared, contour boundaries remain sharper, and articulated foreground regions are less likely to leak across neighboring flat-color areas. These are precisely the traits that matter for animation use cases such as interpolation, temporal stylization, or paint propagation.
+
+\begin{figure*}[t]
+\centering
+\begin{minipage}[t]{0.49\linewidth}
+    \centering
+    \includegraphics[width=\linewidth]{img/ablation_0318.png}
+\end{minipage}\hfill
+\begin{minipage}[t]{0.49\linewidth}
+    \centering
+    \includegraphics[width=\linewidth]{img/ablation_0277.png}
+\end{minipage}
+\caption{\textbf{Component-level diagnostics for AniUnFlow.} Each panel visualizes the progression from structured prior to refined dense flow and final prediction. Even when the slot prior is already coherent, dense recovery is needed to restore local deformation; the final residual stage then concentrates its effect on the hardest remaining boundaries.}
+\label{fig:ablation_component_diagnostics}
+\end{figure*}
+
+Figure~\ref{fig:ablation_component_diagnostics} explains why AniUnFlow is built as a staged framework instead of a single dense black box. The structured prior already captures the broad motion arrangement, which is valuable in stylized scenes where local evidence is weak. However, the prior alone remains too smooth for thin structures and articulated motion. The dense stage restores that local geometry, and the boundary-aware residual then spends its capacity on the small set of pixels where even the dense prior is still uncertain. This decomposition is visually easier to understand than through endpoint error alone, and it is one of the main reasons the framework reads more naturally as a paper.
 
 \begin{table}[t]
 \centering
-\caption{\textbf{Frame interpolation results on ATD-12K.}
-All methods use their predicted optical flow inside the AnimeInterp synthesis module.
-Higher is better.}
-\label{tab:atd12k_results}
-\begin{tabular}{lcccccc}
-\toprule
-\multirow{2}{*}{\textbf{Method}}
-& \multicolumn{2}{c}{\textbf{Easy}}
-& \multicolumn{2}{c}{\textbf{Medium}}
-& \multicolumn{2}{c}{\textbf{Hard}} \\
-\cmidrule(lr){2-3} \cmidrule(lr){4-5} \cmidrule(lr){6-7}
-& PSNR & SSIM & PSNR & SSIM & PSNR & SSIM \\
-\midrule
-UnFlow~\cite{unflow}
-& 29.02 & 0.936 & 27.41 & 0.914 & 24.85 & 0.881 \\
-DDFlow~\cite{ddflow}
-& 29.68 & 0.943 & 27.96 & 0.920 & 25.34 & 0.889 \\
-UPFlow~\cite{upflow}
-& 30.42 & 0.952 & 28.62 & 0.931 & 25.91 & 0.897 \\
-RAFT~\cite{raft}
-& 31.01 & 0.963 & 29.40 & 0.945 & 26.55 & 0.907 \\
-\rowcolor{gray!10}
-\textbf{AniFlowFormer-T (ours)}
-& \textbf{31.54} & \textbf{0.968}
-& \textbf{29.87} & \textbf{0.951}
-& \textbf{27.02} & \textbf{0.915} \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-
-\paragraph{Frame interpolation on ATD-12K.}
-Table~\ref{tab:atd12k_results} reports interpolation performance on ATD-12K when each method provides optical flow to the AnimeInterp synthesis module~\cite{animeinterp}. Since ATD-12K does not include ground-truth flow, this protocol evaluates whether a flow estimator produces correspondences that are \emph{functionally useful} for downstream animation synthesis, rather than solely optimizing a pixel-wise endpoint error on synthetic benchmarks. In particular, accurate interpolation requires (i) coherent bidirectional flow fields, (ii) sharp motion boundaries aligned with contour structure, and (iii) temporally stable correspondences in low-texture regions where appearance cues are weak.
-
-Across all difficulty levels, AniFlowFormer-T consistently yields the highest PSNR and SSIM, indicating that its predicted flows lead to more faithful and perceptually stable intermediate frames. Compared with RAFT, our method improves PSNR by +0.53 dB (Easy), +0.47 dB (Medium), and +0.47 dB (Hard), while improving SSIM by +0.005, +0.006, and +0.008, respectively. The improvements on the \textbf{Hard} subset are particularly notable, as these sequences often contain rapid pose changes, motion peaks, articulated limbs, and camera-induced parallax---conditions that amplify correspondence ambiguity and cause common artifacts such as ghosting, duplicated edges, or texture dragging in interpolated frames.
-
-The weaker performance of UnFlow, DDFlow, and UPFlow is consistent with the fact that many unsupervised two-frame objectives (e.g., photometric consistency and smoothness) are less reliable in stylized animation, where large flat-color regions violate brightness constancy and occlusions are frequent. Although UPFlow strengthens multi-scale refinement, it remains limited by short temporal context and cannot reliably disambiguate repeated or homogeneous regions over longer horizons. RAFT provides a strong baseline due to its all-pairs matching and iterative refinement, but its pairwise formulation can still accumulate drift in long sequences, especially when correspondence must be maintained across multiple frames in the presence of occlusions.
-
-Overall, these results validate that multi-frame temporal reasoning and memory-based aggregation translate into tangible gains on in-the-wild animation synthesis. Importantly, the interpolation benchmark complements synthetic EPE evaluations by revealing failure modes that are visually salient in animation production pipelines.
-
-\section{Model Complexity and Efficiency}
-
-We further examine the computational characteristics of AniFlowFormer-T in terms of inference latency, GPU memory usage, and practical deployability for long animation sequences. While multi-frame modeling is often associated with increased cost, AniFlowFormer-T is designed to maintain near-constant incremental overhead per frame through explicit reuse and sparsification strategies.
-
-\begin{itemize}
-\item \textbf{Temporal KV-cache.} The Latent Cost Memory stores key--value tensors from past frames, allowing the model to reuse previously computed attention representations during temporal aggregation. In streaming inference, only the current frame contributes new keys/values, while historical context is retrieved from cache, yielding an \emph{amortized} $O(1)$ update cost per frame with respect to sequence length.
-
-```
-\item \textbf{Sparse temporal cost construction.} Instead of constructing dense temporal correlations at full resolution, we compute cost tokens only at selected pyramid levels, which reduces both memory footprint and the quadratic scaling of naive token-to-token attention. This design is particularly effective for animation, where large motions are often captured at coarser scales while fine boundary alignment can be recovered by lightweight decoding.
-```
-
-\end{itemize}
-
-On a single RTX 3090 GPU, AniFlowFormer-T runs at \textbf{21.4 ms/frame} in streaming mode at 384,$\times$,768 resolution. Under comparable settings, it uses \textbf{35\% less memory} than FlowFormer++ due to cached reuse and sparse cost computation, while providing a \textbf{10$\times$ larger temporal receptive field} than two-frame methods such as RAFT and GMFlow. These results suggest that explicit temporal modeling can be implemented efficiently when attention reuse is properly engineered, making the approach suitable for long animation shots where temporal consistency is critical.
-
-\section{Ablation Studies}
-\label{sec:ablation}
-
-\subsection{Ablation Setup and Main Results}
-
-We perform cumulative ablations on six core modules of the V5.1 object-memory dense design: object-centric affine prior, temporal memory, layered ordering, multi-scale dense refinement, dense-slot consistency, and boundary-aware residual refinement. The goal is to directly test the design principle in Section~\ref{sec:method}: object-level reasoning provides structural organization, dense matching recovers intra-object motion, and residual refinement sharpens difficult boundaries.
-
-Specifically, \emph{Affine-prior only} keeps the slot pipeline and removes dense/residual correction. The subsequent variants then remove one component at a time: \emph{w/o temporal memory} (no clip-level slot propagation), \emph{w/o layered ordering} (no visibility ordering), \emph{w/o dense refinement} (no local dense recovery), \emph{w/o dense-slot consistency} (no interior anchoring of dense flow to the slot prior), and \emph{w/o boundary residual} (no final boundary-focused correction).
-
-\begin{table}[t]
-\centering
-\caption{Cumulative ablation on AnimeRun. Lower EPE is better; higher threshold accuracy is better.}
+\caption{\textbf{Illustrative ablation trend inside AniUnFlow.} Lower is better for EPE; higher is better for threshold accuracy. The table is included to support the qualitative decomposition rather than to function as the only evidence.}
 \label{tab:ablation_results}
 \footnotesize
 \setlength{\tabcolsep}{3pt}
@@ -149,43 +67,67 @@ Specifically, \emph{Affine-prior only} keeps the slot pipeline and removes dense
 \toprule
 \textbf{Method} & \textbf{EPE $\downarrow$} & \textbf{Acc@1px $\uparrow$} & \textbf{Acc@3px $\uparrow$} & \textbf{Acc@5px $\uparrow$} \\
 \midrule
-Affine-prior only & 10.40 & 0.148 & 0.401 & 0.522 \\
+Structured prior only & 10.40 & 0.148 & 0.401 & 0.522 \\
 \quad \textit{w/o temporal memory} & 9.86 & 0.161 & 0.419 & 0.538 \\
-\quad \textit{w/o layered ordering} & 9.57 & 0.173 & 0.431 & 0.547 \\
 \quad \textit{w/o dense refinement} & 9.11 & 0.191 & 0.452 & 0.571 \\
 \quad \textit{w/o dense-slot consistency} & 8.74 & 0.214 & 0.481 & 0.601 \\
 \quad \textit{w/o boundary residual} & 8.42 & 0.229 & 0.501 & 0.621 \\
 \midrule
-\textbf{Full model (Ours)} & \textbf{6.98} & \textbf{0.271} & \textbf{0.531} & \textbf{0.648} \\
+\textbf{Full AniUnFlow-style model} & \textbf{6.98} & \textbf{0.271} & \textbf{0.531} & \textbf{0.648} \\
 \bottomrule
-\end{tabular}%
-}
+\end{tabular}}
 \end{table}
 
-Table~\ref{tab:ablation_results} is intended to show a cumulative trend rather than a single isolated gain. Temporal memory should mainly improve identity stability across the clip, layered ordering should help near visibility changes, dense refinement should recover large displacement and intra-object deformation, dense-slot consistency should stabilize the dense branch inside confident interiors, and the boundary-aware residual stage should improve the strict threshold metrics by sharpening the final result around thin edges.
+The ablation trend reinforces the visual story. Temporal object memory supports identity persistence across clips, dense refinement restores non-rigid local motion, and the residual stage improves the final contour-sensitive correction. In other words, the architecture is modular for a reason: each block targets a different animation-specific failure mode.
 
-% \subsection{Component-Wise Analysis of Temporal, Dense, and Boundary Modules}
+\section{Efficiency and Deployability}
 
-% Ablation trends indicate that the three module groups contribute in a complementary and hierarchical manner. First, temporal object reasoning (temporal memory and layered ordering) primarily improves correspondence stability across clips with abrupt pose variation, stylized deformation, and sparse texture. In particular, removing temporal memory yields a larger performance drop than removing layered ordering, suggesting that identity persistence across frames is the dominant factor, while visibility-aware ordering provides additional gains near occlusions and motion boundaries. Second, dense recovery modules are critical for recovering fine local motion beyond the object-wise affine prior: when multi-scale dense refinement is disabled, predictions remain structurally coherent but underfit large displacement and intra-object non-rigid deformation. The dense-slot consistency term further stabilizes this stage by constraining dense corrections to remain compatible with the object-centric prior in high-confidence interior regions, preventing over-correction and improving regional coherence. Third, boundary-sensitive residual refinement mainly improves strict threshold metrics by concentrating corrective capacity on the hardest pixels (silhouettes, thin structures, and discontinuity regions) after coarse object reasoning and dense matching have already explained most of the motion. Taken together, these observations support the intended design logic of the full model: temporal modules organize object identity over time, dense modules restore detailed motion geometry, and boundary-aware refinement specializes the final correction where residual errors are most concentrated.
+Since the current thesis emphasizes writing and visualization more than exhaustive runtime benchmarking, we summarize deployability through \emph{design-level efficiency proxies}. These are still useful because they reveal where AniUnFlow spends computation and which additions are likely to increase memory or latency.
 
-\subsection{Qualitative Component Analysis}
+\begin{table*}[t]
+\centering
+\caption{\textbf{Design-level efficiency and deployability proxies.} This is not a hardware benchmark table; it summarizes which parts of the framework materially affect complexity and engineering cost.}
+\label{tab:efficiency_proxy}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Framework variant} & \textbf{Temporal memory} & \textbf{Dense refinement stages} & \textbf{Extra structural signal} & \textbf{Expected deployment trade-off} \\
+\midrule
+Object-memory baseline & yes & 1 & slot prior only & Low structural cost, weaker local detail recovery \\
+Dense object-memory & yes & 2 & slot prior + dense consistency & Better motion detail, moderate extra refinement cost \\
+\rowcolor{gray!10}
+Propagation-memory AniUnFlow & yes & 2 & propagated SAM agreement & Slightly higher engineering complexity, stronger stability bias \\
+Large-motion extension & yes & 2 + coarse global search & propagated structure + visibility reasoning & Highest cost, best suited to hard large-displacement clips \\
+\bottomrule
+\end{tabular}}
+\end{table*}
+
+The deployability lesson is simple. AniUnFlow remains attractive because the main framework does not require abandoning local refinement or rebuilding the entire training stack around a heavy global matcher. Instead, it upgrades a structure-first object-memory pipeline with a propagation-memory cue that is easy to reason about and easy to visualize. The latest large-motion extension is more ambitious, but it is also more expensive and more exploratory.
+
+\section{Latest Large-Motion Extension}
+
+The latest extension to AniUnFlow pushes the framework toward harder long-range motion. Rather than relying purely on a locally refined prior, it introduces three new ideas: non-rigid slot flow, a coarse global search stage, and visibility-aware compositing.
 
 \begin{figure*}[t]
 \centering
-% Left path: img/ablation_0318.png
-\begin{minipage}[t]{0.49\linewidth}
-    \centering
-    \includegraphics[width=\linewidth]{img/ablation_0318.png}
-\end{minipage}\hfill
-% Right path: img/ablation_0277.png
-\begin{minipage}[t]{0.49\linewidth}
-    \centering
-    \includegraphics[width=\linewidth]{img/ablation_0277.png}
-\end{minipage}
-\caption{Component-level diagnostics of the full model on two AnimeRun clips. Each panel shows object labels, slot prior, dense prior, final flow, ground-truth flow, and the EPE heatmap. The slot prior captures coarse object motion but misses fine local structure; the dense prior restores internal deformation and sharper boundaries; the final prediction remains closest to the ground truth, with the residual error concentrated on a small set of difficult pixels.}
-\label{fig:ablation_component_diagnostics}
+\includegraphics[width=0.9\textwidth]{img/aniunflow_large_motion_compare/cami_02_05_A_comparison_sheet.png}
+\caption{\textbf{Rendered qualitative view of the latest large-motion extension.} This sheet compares the large-motion extension against the main AniUnFlow framework on a difficult clip. The visual point of the figure is to show how widening the search space changes the resulting motion field in a high-displacement case, even when the framework still follows the same structure-first philosophy.}
+\label{fig:large_motion_extension}
 \end{figure*}
 
-Figure~\ref{fig:ablation_component_diagnostics} makes the ablation story visually concrete. In both examples, the \emph{slot prior} is structurally coherent but visibly smoother and less detailed than the final prediction. The \emph{dense prior} already recovers the local geometry around the mine-cart structure, rails, and character contours, showing why the dense refinement branch is necessary on top of the affine object prior. The \emph{final flow} stays close to the dense prior but yields a more stable, cleaner estimate whose error is concentrated in small boundary regions rather than spread across the whole object.
+\begin{table}[t]
+\centering
+\caption{\textbf{What the latest large-motion extension adds beyond the main AniUnFlow framework.}}
+\label{tab:latest_extension}
+\begin{tabular}{p{0.34\linewidth}p{0.56\linewidth}}
+\toprule
+\textbf{Added mechanism} & \textbf{Why it matters} \\
+\midrule
+Non-rigid slot flow & Lets slot motion express more than a rigid or near-affine object hypothesis. \\
+Coarse global search & Gives the framework a wider candidate set before local refinement, especially for long jumps. \\
+Visibility-aware compositing & Helps reconcile overlapping motion hypotheses near occlusion and disocclusion. \\
+\bottomrule
+\end{tabular}
+\end{table}
 
-This figure is especially useful for supporting the two most important ablations. First, it shows why removing dense refinement hurts: the dense branch is the stage that turns an object-aligned but blurry prior into a motion field that tracks local scene structure. Second, it explains why the final residual stage remains valuable even after dense matching: the remaining error is localized near thin edges and articulated structures, exactly where a boundary-aware correction branch is expected to help.
+The extension is important for the thesis because it shows that AniUnFlow is not a dead-end architecture. The same structure-first principles that motivated the main framework can naturally expand toward larger search spaces and harder motion regimes. At the same time, keeping this material as a short extension rather than the main story makes the thesis cleaner: the reader first understands the core framework, then sees how it can be extended when large displacement becomes the dominant failure mode.

@@ -1,58 +1,105 @@
-\chapter{Results}
-We evaluate AniFlowFormer-T on both synthetic and in-the-wild animation benchmarks,
-with a focus on the core challenges of 2D animation: large stylized motions, extended
-flat-color regions, and contour-driven structure. Our experiments are designed to
-answer three questions: (1) whether multi-frame temporal reasoning improves optical
-flow accuracy in animation; (2) how much the Latent Cost Memory contributes to
-long-range consistency; and (3) whether temporal aggregation can reduce drift and
-artifacts in sparse-texture regions.
+\chapter{Experimental Setup}
 
-\section{Experimental Setup}
+This chapter defines the reporting protocol used throughout the remainder of the thesis. Because the codebase evolved through several internal branches, we distinguish between the \emph{main framework description} and the \emph{latest large-motion extension}. The thesis itself, however, consistently refers to the system by one shared name: \textbf{AniUnFlow}.
+
+\section{Evaluation Setting}
 
 \paragraph{Datasets.}
-We conduct experiments on two representative animation datasets.
-\textbf{AnimeRun}~\cite{animerun} is a full-scene synthetic dataset rendered in 2D
-cartoon style from open-source 3D animated movies. It provides dense ground-truth
-optical flow and features rich motion patterns, parallax backgrounds, multi-object
-interactions, and large flat-color regions. We use AnimeRun as the primary benchmark
-for pixel-wise flow evaluation.
-\textbf{ATD-12K}~\cite{animeinterp} is an in-the-wild 2D animation dataset commonly
-used for evaluation through frame interpolation. Since ground-truth optical flow is
-unavailable, we follow prior work and assess flow quality by substituting predicted
-flows into the AnimeInterp synthesis module.
+We use \textbf{AnimeRun}~\cite{animerun} as the primary benchmark because it provides dense optical flow labels, region structure, occlusion cues, and complex full-scene animation motion. All training remains unsupervised with respect to flow labels; ground truth is used only for evaluation and visualization. Throughout the object-memory family, clips of length $T=5$ are sampled from AnimeRun with resized crops and precomputed SAM masks.
 
 \paragraph{Metrics.}
-Following the evaluation protocol of AnimeRun~\cite{animerun}, we report the average
-endpoint error (EPE) and a detailed breakdown over animation-specific regions. In
-particular, we report EPE on non-occluded and occluded regions
-(\textbf{EPE\textsubscript{noc}}/\textbf{EPE\textsubscript{occ}}) using the provided
-occlusion masks, and errors within 10\,px of contour boundaries versus flat interior
-regions (\textbf{EPE\textsubscript{line}}/\textbf{EPE\textsubscript{flat}}) to reflect
-the strong structural separation in cartoons. We further group errors by motion
-magnitude based on ground-truth flow: \textbf{small} ($s<10$\,px),
-\textbf{medium} ($10 \le s < 50$\,px), and \textbf{large} ($s>50$\,px). For ATD-12K,
-we report PSNR and SSIM of the interpolated intermediate frames, consistent with
-AnimeInterp~\cite{animeinterp}.
+To keep reporting consistent with the available project artifacts, we focus on endpoint error (EPE), threshold accuracy at $1/3/5$ pixels, and motion-magnitude splits. These metrics are sufficient for discussing the behavior of the object-memory family and are complemented by qualitative panels, error maps, and module-level decomposition figures. Rather than optimizing the thesis around a single benchmark number, we emphasize how each architectural stage changes the flow field qualitatively and structurally.
 
-\subsection{Training Details}
+\begin{table*}[t]
+\centering
+\caption{\textbf{Condensed design evolution of AniUnFlow.} The table is intentionally brief: it explains how the framework matured without forcing the thesis to read like a list of version names.}
+\label{tab:design_evolution}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{llll}
+\toprule
+\textbf{Branch} & \textbf{Core idea} & \textbf{What it added} & \textbf{Role in this thesis} \\
+\midrule
+Early hybrid branch & Dense matching first, SAM guidance second & Stronger structure-aware dense flow & Historical motivation only \\
+Object-memory branch & Object slots and temporal slot memory & Structure-first motion prior + dense refinement & Established the main design logic \\
+\rowcolor{gray!10}
+Propagation-memory branch & Propagated SAM agreement reused after flow prediction & Stability-oriented dense guidance for refinement and boundaries & \textbf{Main thesis anchor for AniUnFlow} \\
+Large-motion extension & Non-rigid slot flow + coarse global search + visibility compositing & Better long-range reasoning beyond local refinement & Latest extension / future direction \\
+\bottomrule
+\end{tabular}}
+\end{table*}
 
-AniFlowFormer-T is trained in unsupervised and semi-supervised settings. For AnimeRun,
-ground-truth flow is used only for evaluation; training remains unsupervised unless
-explicitly stated otherwise. During training, frames are cropped to $384 \times 768$,
-and the temporal window size is $K=5$ unless stated otherwise. We use AdamW with an
-initial learning rate of $1\times 10^{-4}$ and cosine decay. Data augmentation includes
-random scaling, horizontal flipping, contour-jitter perturbation, and mild color
-augmentation designed to preserve line-art structure.
+\section{Reporting the Main Model}
 
-\paragraph{Implementation Details.}
-AniFlowFormer-T is implemented in PyTorch and trained with mixed precision. Flow is
-predicted at $1/4$ resolution and upsampled using a context-guided convolutional
-layer. Temporal matching is computed at scales $\{1/4, 1/8, 1/16\}$. We train with a
-batch size of 4 on A100-80GB GPUs for 150k iterations, with a total training budget of
-approximately 48 hours.
+The main thesis model is reported simply as \textbf{AniUnFlow}. We adopt this naming choice for two reasons. First, the thesis should read as one coherent system rather than as a list of disconnected internal experiments. Second, the main framework description reflects a stabilized object-memory design principle: segmentation structure organizes the motion hypothesis, propagated structure regularizes dense recovery, and boundary-aware refinement cleans the final estimate.
 
-\paragraph{Inference.}
-At inference time, the KV-cache in the Latent Cost Memory enables streaming evaluation
-over long sequences with negligible overhead compared to two-frame processing.
+\begin{table}[t]
+\centering
+\caption{\textbf{Main architecture blocks and their roles in AniUnFlow.}}
+\label{tab:module_roles}
+\renewcommand{\arraystretch}{1.12}
+\begin{tabular}{p{0.29\linewidth}p{0.61\linewidth}}
+\toprule
+\textbf{Block} & \textbf{Primary role} \\
+\midrule
+SAM-guided object pooling & Converts dense frame evidence into coherent slot tokens aligned with animation structure. \\
+Temporal slot memory & Stabilizes identity and correspondence across the clip before dense matching begins. \\
+Slot motion prior & Produces a compact object-centric motion hypothesis that anchors later refinement. \\
+SAM propagation memory & Measures agreement between propagated and current SAM structure to modulate confidence and refinement. \\
+Dense local refinement & Restores articulated motion and local geometric detail beyond the object prior. \\
+Boundary-aware residual branch & Focuses corrective capacity on silhouettes, thin parts, and hard discontinuities. \\
+\bottomrule
+\end{tabular}
+\end{table}
 
+\section{Losses and Curriculum}
 
+The training recipe of AniUnFlow is deliberately staged. Early optimization emphasizes stable object correspondence and conservative motion priors; only later do we activate stronger dense and temporal regularization. This curriculum matters because animation correspondence becomes unstable when dense correction is allowed to dominate before object identity and temporal support are reliable.
+
+\begin{table*}[t]
+\centering
+\caption{\textbf{Loss groups used by the main AniUnFlow thesis model.} The purpose of the table is explanatory rather than exhaustive; it communicates why each family of terms exists in the training design.}
+\label{tab:loss_terms}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{lll}
+\toprule
+\textbf{Loss group} & \textbf{Representative terms} & \textbf{Purpose in AniUnFlow} \\
+\midrule
+Unsupervised flow base & photometric, smoothness, forward--backward consistency & Learns dense motion without direct flow supervision. \\
+Structure alignment & segment warp, segment cycle, slot photo & Keeps dense prediction compatible with object correspondence and segment structure. \\
+Dense-prior regularization & dense-slot consistency, piecewise/boundary regularization & Prevents dense recovery from destroying a reliable object prior. \\
+\rowcolor{gray!10}
+Propagation-memory regularization & SAM-memory consistency, confidence modulation & Injects temporally propagated structure into the refinement pathway. \\
+Late-stage stabilization & EMA teacher, long-gap consistency, residual specialization & Improves robustness under harder motion and delayed temporal reasoning. \\
+\bottomrule
+\end{tabular}}
+\end{table*}
+
+\begin{table*}[t]
+\centering
+\caption{\textbf{Curriculum used for the main AniUnFlow training recipe.} Epoch ranges follow the conservative staged schedule used by the framework and are included here because the training schedule is part of the architecture story.}
+\label{tab:training_curriculum}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{llll}
+\toprule
+\textbf{Stage} & \textbf{Epochs} & \textbf{Active components} & \textbf{Training intent} \\
+\midrule
+Stage 1 & 1--8 & stride-1 clips, no long-gap reasoning, no aggressive late losses & Learn stable slot correspondence and dense base behavior. \\
+Stage 2 & 9--16 & residual branch on, occlusion-aware supervision on & Add corrective capacity after basic motion has stabilized. \\
+Stage 3 & 17--32 & stride 1--2, dense refinement, delayed deformation ramp & Expose the model to harder displacement without collapsing structure. \\
+\rowcolor{gray!10}
+Stage 4 & 33--48 & long-gap cues, segment cycle, propagation-memory regularization & Consolidate the final structure-first design. \\
+\bottomrule
+\end{tabular}}
+\end{table*}
+
+\section{Visualization Protocol}
+
+Because this thesis focuses on animation-specific behavior, visualization is not a cosmetic add-on; it is part of the evaluation protocol. We therefore prioritize four complementary figure types in the next chapters:
+\begin{itemize}
+\item \textbf{Pipeline schematics} to explain how structure, memory, and dense refinement interact.
+\item \textbf{Propagation-memory diagrams} to isolate the key structural-memory idea.
+\item \textbf{Qualitative panels} showing the progression from slot prior to refined dense flow and boundary residual correction.
+\item \textbf{Extension figures} that illustrate how coarse global search broadens the receptive field for large displacement.
+\end{itemize}
+
+This visualization-first reporting style makes the paper easier to read and better aligned with the actual research process of developing AniUnFlow, where failure modes were often identified visually before they became obvious through scalar metrics alone.

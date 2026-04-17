@@ -1,0 +1,27 @@
+{
+  "scene": "cami_02_05_A",
+  "records": [
+    {
+      "scene": "cami_02_05_A",
+      "center": 31,
+      "frame": "0306",
+      "panel_path": "reports/img/aniunflow_compare/panels/cami_02_05_A_compare_0031_0306.png",
+      "ours_label": "AniUnFlow",
+      "reference_label": "Object-memory-baseline",
+      "ours_epe": 200.40611267089844,
+      "object_epe": 200.59788513183594,
+      "upflow_epe": 200.33914184570312
+    },
+    {
+      "scene": "cami_02_05_A",
+      "center": 6,
+      "frame": "0281",
+      "panel_path": "reports/img/aniunflow_compare/panels/cami_02_05_A_compare_0006_0281.png",
+      "ours_label": "AniUnFlow",
+      "reference_label": "Object-memory-baseline",
+      "ours_epe": 6.81677770614624,
+      "object_epe": 6.813636302947998,
+      "upflow_epe": 6.952662944793701
+    }
+  ]
+}

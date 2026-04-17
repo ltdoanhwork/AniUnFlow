@@ -20,6 +20,7 @@ if str(ROOT) not in sys.path:
 
 from dataio.clip_dataset_unsup import UnlabeledClipDataset, _read_flow_any
 from models.aniunflow_v5 import AniFlowFormerTV5, V5Config
+from models.aniunflow_v6 import AniFlowFormerTV6, V6Config
 from utils.flow_viz import compute_flow_magnitude_radmax, flow_to_image
 
 
@@ -52,21 +53,27 @@ PALETTE = np.array(
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Render V5.1 object-memory dense paper demo panels.")
+    parser = argparse.ArgumentParser(description="Render AniUnFlow paper demo panels from a selected checkpoint.")
     parser.add_argument(
         "--config",
-        default=str(ROOT / "workspaces" / "v5_1_object_memory_dense_parallel_v4" / "config.yaml"),
+        default=str(ROOT / "workspaces" / "v5_4_sam_propagation_memory" / "config.yaml"),
         help="Path to workspace config YAML.",
     )
     parser.add_argument(
         "--checkpoint",
-        default=str(ROOT / "workspaces" / "v5_1_object_memory_dense_parallel_v4" / "best.pth"),
+        default=str(ROOT / "workspaces" / "v5_4_sam_propagation_memory" / "best.pth"),
         help="Path to trained checkpoint.",
     )
     parser.add_argument(
         "--output-dir",
-        default=str(ROOT / "demo" / "v5_1_object_memory_dense_parallel_v4_paper"),
+        default=str(ROOT / "demo" / "aniunflow_paper"),
         help="Directory to store rendered demo artifacts.",
+    )
+    parser.add_argument(
+        "--branch",
+        choices=["auto", "main", "large_motion"],
+        default="auto",
+        help="Override model family selection. 'main' loads the main AniUnFlow path, 'large_motion' loads the latest extension.",
     )
     parser.add_argument(
         "--scene",
@@ -179,8 +186,19 @@ def apply_checkpoint_state(module: torch.nn.Module, state_dict: Dict[str, torch.
         print(f"[Demo] Unexpected model keys after load: {preview}")
 
 
-def build_model(cfg: Dict[str, Any], checkpoint_path: Path, device: torch.device) -> AniFlowFormerTV5:
-    model = AniFlowFormerTV5(V5Config.from_dict(cfg)).to(device)
+def infer_branch(cfg: Dict[str, Any], branch_override: str) -> str:
+    if branch_override != "auto":
+        return branch_override
+    backbone = str(cfg.get("model", {}).get("backbone", "")).lower()
+    return "large_motion" if backbone.startswith("v6_") or "global_slot_search" in backbone else "main"
+
+
+def build_model(cfg: Dict[str, Any], checkpoint_path: Path, device: torch.device, branch_override: str) -> torch.nn.Module:
+    branch = infer_branch(cfg, branch_override)
+    if branch == "large_motion":
+        model = AniFlowFormerTV6(V6Config.from_dict(cfg)).to(device)
+    else:
+        model = AniFlowFormerTV5(V5Config.from_dict(cfg)).to(device)
     ckpt = torch.load(checkpoint_path, map_location=device)
     state_dict = ckpt["state_dict"] if isinstance(ckpt, dict) and "state_dict" in ckpt else ckpt
     apply_checkpoint_state(model, state_dict)
@@ -500,7 +518,7 @@ def main() -> None:
     centers = choose_centers(seq, temporal_radius, args.topk, args.min_gap, args.centers)
     index_map = build_index_map(dataset)
 
-    model = build_model(cfg, checkpoint_path, device)
+    model = build_model(cfg, checkpoint_path, device, args.branch)
 
     panels_dir = output_dir / "panels"
     records = []

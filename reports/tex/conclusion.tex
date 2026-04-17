@@ -1,28 +1,22 @@
-\chapter{Conclusion & Future Work}
-
-\section{Limitations and Future Work}
-While AniFlowFormer-T advances optical flow estimation for stylized animation, several limitations remain and motivate future directions.
-
-\begin{itemize}
-\item \textbf{Very long-range consistency.}
-Although the Latent Cost Memory improves temporal stability over short and mid-range horizons, maintaining precise correspondences over hundreds of frames is still challenging. In long shots, small pose variations and repeated patterns can gradually accumulate drift, especially when key structures temporarily disappear due to occlusions or camera motion.
-
-```
-\item \textbf{High-frequency stylistic effects.}
-Animation frequently employs non-physical effects such as motion streaks, smear frames, impact frames, and intentional shape exaggerations that violate typical correspondence assumptions. These effects can create transient appearances that are inconsistent across time, which may confuse temporal cost construction and lead to unstable matches.
-
-\item \textbf{Under-utilization of region-level supervision.}
-AnimeRun provides region matching annotations in addition to dense flow, but the current framework does not explicitly leverage segment- or region-level constraints. Incorporating region correspondences (e.g., character parts or object segments) may further improve contour stability and identity preservation under occlusion.
-
-\item \textbf{Scalability to high-resolution production content.}
-Real-world animation pipelines often operate at 2K--4K resolution, where dense temporal matching becomes expensive. While our current implementation remains efficient at 384$\times$768, scaling to higher resolutions may require hierarchical temporal windows, sparse propagation, or adaptive token pruning to reduce compute and memory overhead.
-```
-
-\end{itemize}
-
-Future work will explore (i) integrating segment-matching supervision to strengthen boundary and part-level consistency, (ii) extending the temporal horizon via memory compression or retrieval-based mechanisms, and (iii) incorporating animation-specific priors (e.g., smear-frame detection or effect-aware matching) to improve robustness under stylized motion artifacts.
+\chapter{Conclusion \& Future Work}
 
 \section{Conclusion}
-We presented AniFlowFormer-T, an unsupervised multi-frame temporal Transformer tailored for optical flow estimation in 2D animation. Unlike natural videos, animation exhibits large flat-color regions, sharp contour boundaries, and stylized motion patterns that challenge conventional two-frame models and photometric self-supervision. AniFlowFormer-T addresses these issues by combining a temporal cost volume with a Latent Cost Memory for long-range correspondence aggregation and a Global Temporal Regressor for sequence-level fusion, enabling stable and contour-aware motion estimation without relying on dense ground-truth flow during training.
 
-Quantitative experiments on AnimeRun demonstrate consistent improvements over strong baselines, reducing the overall EPE from 4.21 (RAFT) to \textbf{3.52} and substantially lowering errors under large displacements. On ATD-12K, evaluated through the AnimeInterp frame interpolation protocol, our predicted flows yield higher-quality intermediate frames, improving PSNR from 31.01 dB to \textbf{31.54 dB}. Together, these results underscore the importance of multi-frame temporal reasoning and long-range memory for robust correspondence in stylized animation. We believe AniFlowFormer-T provides a practical foundation for future work in animation analysis and production-oriented automation, including interpolation, editing, and temporally consistent generation.
+This thesis presented \textbf{AniUnFlow}, a structure-first unsupervised optical-flow framework for 2D animation. The central idea is that animation correspondence should not be treated as a purely dense matching problem. Instead, AniUnFlow combines SAM-guided object structure, temporal slot memory, dense local refinement, propagated structural agreement, and boundary-aware residual correction so that motion estimation remains both coherent and expressive in stylized scenes.
+
+The most important outcome of this work is not a single scalar benchmark value, but a clearer design principle for animation flow estimation. Object structure is valuable because it organizes the motion hypothesis in flat, ambiguous regions. Dense refinement is valuable because it restores local articulation and geometric detail that an object prior alone cannot capture. Propagation memory is valuable because it tells the framework when nearby temporal structure is still trustworthy after motion has already been estimated. Together, these components produce a framework that is easier to interpret, easier to visualize, and more aligned with the practical failure modes of anime-style motion.
+
+Another contribution of the thesis is presentational. By rewriting the work around one shared framework name and adding more schematic and qualitative figures, the paper now reads less like a collection of disconnected experiments and more like a coherent research story. This matters because the development of AniUnFlow was inherently iterative: the architecture improved not only by adding modules, but by learning how structure, memory, and dense refinement should interact.
+
+\section{Limitations and Future Work}
+
+AniUnFlow still leaves several open directions for future work.
+
+\begin{itemize}
+\item \textbf{Very large displacement remains difficult.} Even with structure-first reasoning, extremely large motion can exceed what local dense refinement can recover from a conservative prior. The latest large-motion extension suggests that broader search and visibility-aware fusion are promising next steps.
+\item \textbf{Propagation memory is still a heuristic structural cue.} The propagated agreement map improves refinement stability, but it remains an indirect signal derived from masks and current motion hypotheses. Stronger learned reliability estimation could make this pathway more adaptive.
+\item \textbf{Stylized animation effects remain under-modeled.} Smear frames, impact frames, motion streaks, and intentional shape exaggeration can violate ordinary correspondence assumptions. Handling such phenomena may require animation-aware effect detection or richer temporal priors.
+\item \textbf{Downstream evaluation should be expanded.} The framework is naturally relevant to interpolation, editing, and temporally consistent stylization, but these tasks deserve fuller dedicated evaluation beyond the scope of the current thesis.
+\end{itemize}
+
+In summary, AniUnFlow provides a practical foundation for animation-oriented optical flow by showing that structure and dense correspondence should cooperate rather than compete. The framework already supports richer visualization and more readable analysis than the earlier draft of the thesis, and it opens a clear path toward future work on larger motion, stronger temporal reasoning, and production-oriented animation tools.
