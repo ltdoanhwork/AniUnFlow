@@ -1,0 +1,286 @@
+\chapter{Materials and Methods}
+
+\section{Materials}
+This work builds upon both synthetic animation correspondence datasets and standard deep learning toolchains for optical flow research. To ensure reproducibility and fair evaluation, all materials used in training and validation are described below.
+
+\subsection{Datasets.}
+We conduct all experiments on the \textbf{AnimeRun} dataset~\cite{animerun}, which
+provides dense pixel-wise optical flow annotations and region-wise correspondence
+labels rendered from full-scene 3D animated movies in a 2D cartoon style. AnimeRun captures motion patterns that are characteristic of animation, including large stylized displacements, multi-object interactions, camera-induced parallax, and frequent occlusions. Importantly, its visual appearance contains extended flat-color regions and explicit line-art contours, which often violate photometric assumptions and make correspondence estimation substantially harder than in natural videos.
+Throughout this thesis, AnimeRun serves as our sole benchmark and data source; unless explicitly stated otherwise, we use only the AnimeRun training split for learning and the official validation/test splits for evaluation~\cite{animerun}.
+
+\begin{figure*}[t]
+    \centering
+    \includegraphics[width=\textwidth]{img/contour_flow_visualization.png}
+    \caption{\textbf{AnimeRun qualitative visualization of appearance, contour structure, and motion.}
+    Each column corresponds to a different AnimeRun frame index. \textbf{Top:} original animation
+    frames, illustrating large flat-color regions and stylized shading. \textbf{Middle:} extracted
+    contour maps that emphasize line-art boundaries and object outlines. \textbf{Bottom:} optical
+    flow visualization (color-coded) showing dominant motion patterns and large displacements.
+    This example highlights the key challenges addressed in this work: weak texture cues inside
+    flat regions, sharp contour discontinuities at boundaries, and large stylized motions with
+    frequent occlusions~\cite{animerun}.}
+    \label{fig:animerun_contour_flow}
+\end{figure*}
+
+
+\subsection{Data Preprocessing.}
+We follow a consistent preprocessing pipeline tailored for \emph{unsupervised} optical
+flow on stylized animation, where photometric losses and warping-based supervision
+are sensitive to aggressive augmentation. Each AnimeRun frame is converted to RGB
+and normalized to $[0,1]$. We resize frames while preserving aspect ratio and then
+apply a fixed-size random crop for training. Unless otherwise stated, we use a crop
+resolution of $384\times768$.
+
+\paragraph{Temporal sampling.}
+For each training iteration, we sample a temporal window $\mathcal{W}_t$ of length
+$K$ from a clip and construct pairs/triples required by the objectives (e.g.,
+$(t,t+1)$ for photometric warping and $(t,t+1,t+2)$ for temporal consistency). To
+increase motion diversity and avoid bias toward a single direction, we apply temporal
+reversal with probability $0.5$, i.e., we train on both forward and reversed sequences.
+
+\paragraph{Geometric augmentation.}
+We apply augmentations that preserve correspondence structure across frames:
+(i) random cropping, (ii) horizontal flipping (applied consistently to all frames
+in the window), and (iii) mild random scaling. When scaling is used, the flow (only
+for evaluation purposes) is scaled accordingly, but \emph{no ground-truth flow is
+used during unsupervised training}. We avoid aggressive rotation or perspective
+warps as they can introduce artificial motion inconsistent with the underlying
+animation geometry.
+
+\paragraph{Photometric augmentation (conservative).}
+Because AnimeRun contains flat-color regions and stylized shading, heavy color jitter
+can break the weak photometric assumptions used for self-supervision. We therefore
+use only mild, low-magnitude perturbations (e.g., small brightness/contrast changes)
+and apply them identically across the temporal window to reduce appearance drift.
+In ablations, we also evaluate training without any color augmentation to assess
+sensitivity.
+
+\paragraph{Contour extraction (optional ablations).}
+To study structure-aware cues, we optionally extract contour maps from each frame
+(e.g., via edge detection on the luminance channel) and either (i) use them as
+auxiliary inputs by concatenation, or (ii) use them to define contour/flat regions
+for metric breakdown. This is used only in ablation settings and does not change
+the core training protocol unless explicitly stated.
+
+\paragraph{Occlusion masks for training.}
+Since occlusion masks are required to gate photometric supervision, we compute
+occlusion masks on-the-fly using forward--backward consistency derived from the model’s predicted flows (Sec.~\ref{sec:unsup_objectives}). These masks are used to
+exclude invalid pixels from photometric reconstruction losses during training.
+
+\subsection{Implementation Details.}
+AniFlowFormer-T is implemented in PyTorch and trained on NVIDIA GPUs. The backbone
+uses a shared-weight multi-scale pyramid encoder across time to extract features
+$\{F_t^{(1/4)}, F_t^{(1/8)}, F_t^{(1/16)}\}$ for temporal cost construction. To
+support efficient multi-frame processing, we cache key--value tensors in the Latent
+Cost Memory and reuse them across timesteps during inference, enabling streaming
+evaluation on long sequences.
+
+For optimization, we use AdamW with an initial learning rate of $1\times10^{-4}$ and
+cosine decay. Unless otherwise specified, we train with mixed precision (AMP) and
+apply gradient clipping to stabilize training under unsupervised objectives, where
+occlusion gating and warping operations can introduce noisy gradients. Batch size is
+set according to GPU memory (e.g., 4 on A100-80GB as reported in our experiments).
+All models are trained on the AnimeRun training split only; validation/test splits
+are held out for evaluation.
+
+\subsection{Evaluation Protocols.}
+We evaluate flow accuracy on AnimeRun using the official protocol~\cite{animerun}.
+For dense flow, we report End-Point Error (EPE) over all valid pixels as well as
+region-specific breakdowns that reflect animation structure. Specifically, we
+evaluate EPE on non-occluded vs.\ occluded pixels (using AnimeRun-provided masks for
+evaluation), and we additionally report errors near contour boundaries and within
+large flat-color interiors to quantify boundary alignment and texture-sparse
+robustness.
+
+To analyze performance under different motion regimes, we also report motion-split
+EPE grouped by ground-truth magnitude (small/medium/large). Importantly, ground-truth
+flow and occlusion labels are \emph{never} used for unsupervised training; they are
+used only for evaluation and reporting. Hyperparameters are selected using the
+training split and (optionally) the validation split, and no test data are used for
+model selection or tuning.
+
+
+% This section expects bibliography entries from method_refs.bib.
+\section{Method}
+\label{sec:method}
+
+\subsection{System Overview}
+
+\textbf{AniUnFlow-SamT} is an unsupervised segment-guided multi-frame optical flow framework for 2D animation. The model combines: (i) SAM-guided object decomposition, (ii) temporal object memory over short clips, (iii) layered affine motion priors with occlusion-aware ordering, (iv) coarse-to-fine dense correlation refinement, and (v) boundary-aware residual correction. The design principle is to use object structure to organize motion estimation, while using dense matching to recover non-rigid and large-displacement details.
+
+Given a clip $\mathcal{I}=\{I_t\}_{t=1}^{T}$ with $T=5$ frames, the model predicts adjacent forward flows $\mathbf{F}_{t\rightarrow t+1}$, object correspondences, per-object affine parameters, ordering cues, dense refinements, and final residual corrections. The full pipeline is shown in Fig.~\ref{fig:pipeline_overview}.
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=0.95\textwidth]{img/thesis-full_pipeline.jpg}
+\caption{Full pipeline of AniUnFlow-SamT. Starting from SAM masks and multi-scale feature extraction, the model performs temporal slot memory aggregation, object correspondence and layered affine prior estimation, coarse-to-fine dense correlation refinement, and boundary-aware residual correction to produce the final flow field. Conceptual flow: \emph{Structure $\rightarrow$ Motion prior $\rightarrow$ Dense recovery $\rightarrow$ Boundary refinement}.}
+\label{fig:pipeline_overview}
+\end{figure*}
+
+% \subsection{Problem Formulation}
+
+% For each frame $I_t \in \mathbb{R}^{3\times H\times W}$, we assume access to a SAM-derived label map $L_t \in \{0,1,\dots,S\}^{H\times W}$, where label $0$ denotes background and $S$ is the maximum number of object slots. In our main configuration, $S=32$. The goal is to estimate dense forward flow fields
+% \begin{equation}
+% \mathbf{F}_{t\rightarrow t+1} \in \mathbb{R}^{2\times H'\times W'}, \qquad t=1,\dots,T-1,
+% \end{equation}
+% without ground-truth optical flow supervision. Here $(H',W')$ denotes the output resolution of the finest decoder level.
+
+% The key modeling assumption is that each frame can be decomposed into a set of object-conditioned motion regions, but that within-region motion may still be non-rigid. Therefore, rather than forcing a purely parametric motion model, we represent flow as the sum of a structured dense prior and a boundary-aware residual:
+% \begin{equation}
+% \label{eq:flow_decomposition}
+% \mathbf{F}_{t\rightarrow t+1} = \mathbf{F}^{\mathrm{dense}}_{t\rightarrow t+1} + \mathbf{R}_{t\rightarrow t+1},
+% \end{equation}
+% where $\mathbf{F}^{\mathrm{dense}}_{t\rightarrow t+1}$ is already informed by both object motion and dense correspondence, and $\mathbf{R}_{t\rightarrow t+1}$ is reserved for boundary-sensitive correction.
+
+\subsection{SAM-Guided Object Representation}
+
+Our first design choice is to make segmentation structure available at the representation level rather than only as an auxiliary loss. We begin by extracting a two-level feature pyramid from the input clip using a lightweight CNN encoder. Let $\phi_t^{(1)} \in \mathbb{R}^{C_1\times H_1\times W_1}$ and $\phi_t^{(2)} \in \mathbb{R}^{C_2\times H_2\times W_2}$ denote the level-1 and level-2 features for frame $t$. In the main AniUnFlow-SamT configuration, the encoder uses $40$ base channels, while the object slot dimensionality is set to $160$.
+
+When SAM encoder features are enabled, we additionally fuse SAM~2 image/video features into the second pyramid level. This design is motivated by the observation that SAM-style encoders provide high-quality region-aware descriptors and temporal segmentation cues \cite{sam,ravi2024sam2}. The fusion is applied before object pooling so that the object tokens inherit both appearance information and segmentation-aware context.
+
+Given the feature pyramid and the label map, we pool object descriptors from both pyramid levels. For each frame $t$ and slot index $s\in\{1,\dots,S\}$, we define the object support set
+\begin{equation}
+\Omega_{t,s}^{(l)} = \{\mathbf{p} : L_t^{(l)}(\mathbf{p}) = s\},
+\end{equation}
+where $L_t^{(l)}$ is the SAM label map resized to pyramid level $l$. We then compute level-wise pooled descriptors by average aggregation,
+\begin{equation}
+\mathbf{z}_{t,s}^{(l)} = \frac{1}{|\Omega_{t,s}^{(l)}|} \sum_{\mathbf{p} \in \Omega_{t,s}^{(l)}} \mathbf{P}^{(l)}\phi_t^{(l)}(\mathbf{p}),
+\end{equation}
+where $\mathbf{P}^{(l)}$ is a learned projection into the slot space. The final object token is obtained by fusing the two pooled descriptors:
+\begin{equation}
+\mathbf{z}_{t,s} = f_{\mathrm{slot}}\left([\mathbf{z}_{t,s}^{(1)} ; \mathbf{z}_{t,s}^{(2)}]\right),
+\end{equation}
+where $f_{\mathrm{slot}}(\cdot)$ is a two-layer MLP.
+
+This representation stage serves two key purposes. First, it introduces an explicit object-level prior into the motion estimation process. Second, it compresses dense per-pixel evidence into compact tokens that are more amenable to temporal stabilization. Compared with dense-only formulations, this design encourages the model to reason over coherent motion entities before fine-grained dense correction, consistent with layered motion and localized layer formulations \cite{wang1994representing,sevillalara2016optical}.
+
+\subsection{Temporal Object Reasoning and Layered Motion Prior}
+
+Pairwise matching alone is often brittle in anime-like content, where appearance may change abruptly across frames because of stylized deformation, sparse texture, or line-art flicker. We therefore aggregate object tokens across the full clip using a temporal transformer encoder \cite{vaswani2017attention}. Let
+\begin{equation}
+\mathbf{Z} = [\mathbf{z}_{t,s}]_{t=1,s=1}^{T,\,S} \in \mathbb{R}^{T\times S\times D}
+\end{equation}
+be the stacked slot tensor. We add learnable time and slot embeddings and process the flattened sequence with a transformer encoder:
+\begin{equation}
+\widetilde{\mathbf{Z}} = \mathrm{TransformerEnc}(\mathbf{Z} + \mathbf{E}_{\mathrm{time}} + \mathbf{E}_{\mathrm{slot}}).
+\end{equation}
+The resulting memory-enhanced tokens $\tilde{\mathbf{z}}_{t,s}$ provide temporally contextualized object descriptors. In our main configuration, we use a $3$-layer temporal encoder with $4$ attention heads.
+
+For adjacent frames $(t,t+1)$, we then compute an object correspondence matrix by combining dot-product similarity in slot space with a mask-overlap prior:
+\begin{equation}
+\label{eq:slot_matching}
+\mathbf{A}_t = \mathrm{softmax}\left(\frac{\widetilde{\mathbf{Z}}_t\widetilde{\mathbf{Z}}_{t+1}^{\top}}{\sqrt{D}} + \lambda_{\mathrm{iou}}\,\mathrm{IoU}(L_t^{(1)},L_{t+1}^{(1)})\right),
+\end{equation}
+where $\lambda_{\mathrm{iou}}$ controls the contribution of label overlap. The matched target slot representation is then
+\begin{equation}
+\hat{\mathbf{z}}_{t,s} = \sum_{j=1}^{S} A_t(s,j)\,\tilde{\mathbf{z}}_{t+1,j},
+\end{equation}
+and the slot confidence is defined as $c_{t,s}=\max_j A_t(s,j)$. The role of temporal memory here is not to replace dense optical flow estimation, but to stabilize object identity and correspondence across the clip so that later dense matching is seeded with a plausible object-level prior rather than learned from scratch at every frame pair.
+
+Given the matched slot descriptors, we estimate a 6-parameter affine motion vector for each source slot:
+\begin{equation}
+\boldsymbol{\theta}_{t,s} = f_{\mathrm{aff}}\left([\tilde{\mathbf{z}}_{t,s};\hat{\mathbf{z}}_{t,s}]\right) \in \mathbb{R}^{6}.
+\end{equation}
+This parameterization yields a slot-wise parametric motion field
+\begin{equation}
+\mathbf{u}_{t,s}^{\mathrm{slot}}(x,y) =
+\begin{bmatrix}
+a_{t,s}x + b_{t,s}y + c_{t,s}\\
+d_{t,s}x + e_{t,s}y + f_{t,s}
+\end{bmatrix},
+\end{equation}
+which is rasterized to the image according to the object labels:
+\begin{equation}
+\mathbf{F}^{\mathrm{slot}}_{t\rightarrow t+1}(\mathbf{p}) = \sum_{s=1}^{S} \mathbf{1}[L_t^{(1)}(\mathbf{p})=s] \, \mathbf{u}_{t,s}^{\mathrm{slot}}(\mathbf{p}).
+\end{equation}
+
+In parallel, the model predicts an ordering score $o_{t,s}$ and an occlusion probability $q_{t,s}$ per slot. This follows the layered-motion intuition that moving entities should not only be matched, but also ordered in relative visibility to better explain occlusions and disocclusions \cite{wang1994representing,sevillalara2016optical}. We do not interpret the ordering score as metric depth; rather, it is a latent variable used to regularize temporal ordering consistency.
+
+This stage establishes the structured motion prior of the method. It enforces object-level coherence and visibility-aware reasoning, but it is still limited by the rigidity of affine motion inside each segment. This limitation motivates the next stage.
+
+\subsection{Dense Correlation Recovery from the Object Prior}
+
+The affine slot prior provides strong structural regularization, but it is insufficient for large articulated motion or non-rigid motion within a single object. To address this limitation, AniUnFlow-SamT introduces dense local matching at two pyramid levels, inspired by the success of cost-volume and warping-based optical flow estimation \cite{pwcnet,raft,flowformer}.
+
+We first rasterize the affine slot motion at level~2 to obtain $\mathbf{F}^{\mathrm{slot},(2)}_{t\rightarrow t+1}$. We then warp target features with this prior and build a local correlation volume over a search window $\Delta \in [-r_2,r_2]^2$:
+\begin{equation}
+\label{eq:l2_corr}
+\mathcal{C}_t^{(2)}(\mathbf{p},\Delta) = \left\langle \bar{\phi}_t^{(2)}(\mathbf{p}),\, \bar{\phi}_{t+1}^{(2)}\left(\mathbf{p} + \mathbf{F}^{\mathrm{slot},(2)}_{t\rightarrow t+1}(\mathbf{p}) + \Delta\right) \right\rangle,
+\end{equation}
+where $\bar{\phi}$ denotes channel-wise normalized features. A convolutional refinement head predicts a level-2 correction and a dense confidence map:
+\begin{equation}
+\delta \mathbf{F}_t^{(2)},\, \mathbf{C}_t^{(2)} = g_2\left(\phi_t^{(2)},\, \mathrm{warp}(\phi_{t+1}^{(2)},\mathbf{F}^{\mathrm{slot},(2)}),\, \mathbf{F}^{\mathrm{slot},(2)},\, \mathcal{C}_t^{(2)}\right),
+\end{equation}
+which yields
+\begin{equation}
+\mathbf{F}^{\mathrm{dense},(2)}_{t\rightarrow t+1} = \mathbf{F}^{\mathrm{slot},(2)}_{t\rightarrow t+1} + \delta \mathbf{F}_t^{(2)}.
+\end{equation}
+In our main configuration, the level-2 search radius is $r_2=6$.
+
+At level~1, we upsample the refined level-2 field and fuse it with the slot-affine level-1 prior:
+\begin{equation}
+\label{eq:prior_blend}
+\mathbf{F}^{\mathrm{prior},(1)}_{t\rightarrow t+1} = \alpha\,\uparrow\!\left(\mathbf{F}^{\mathrm{dense},(2)}_{t\rightarrow t+1}\right) + (1-\alpha)\,\mathbf{F}^{\mathrm{slot},(1)}_{t\rightarrow t+1},
+\end{equation}
+where $\alpha\in[0,1]$ is a learned mixing coefficient fixed by configuration in our implementation ($\alpha=0.72$ for the main model). The level-1 refinement head again constructs a local correlation volume around this blended prior and predicts a finer correction:
+\begin{equation}
+\delta \mathbf{F}_t^{(1)},\, \mathbf{C}_t^{(1)} = g_1\left(\phi_t^{(1)},\, \mathrm{warp}(\phi_{t+1}^{(1)},\mathbf{F}^{\mathrm{prior},(1)}),\, \mathbf{F}^{\mathrm{prior},(1)},\, \mathcal{C}_t^{(1)}\right),
+\end{equation}
+leading to the refined dense prior
+\begin{equation}
+\label{eq:dense_prior}
+\mathbf{F}^{\mathrm{dense}}_{t\rightarrow t+1} = \mathbf{F}^{\mathrm{prior},(1)}_{t\rightarrow t+1} + \delta \mathbf{F}_t^{(1)}.
+\end{equation}
+The level-1 search radius is $r_1=4$. The dense confidence used by the final refiner is defined as the maximum of the upsampled coarse confidence and the fine-level confidence.
+
+This coarse-to-fine dense recovery is a key distinction from slot-affine-only designs. Rather than asking a single residual branch to recover all deviations from the object prior, AniUnFlow-SamT first introduces explicit dense evidence through local correlation volumes, then reserves the final residual stage for boundary-sensitive corrections.
+
+\subsection{Boundary-Aware Refinement and Learning}
+
+Even after dense correlation refinement, motion discontinuities remain challenging around thin structures, occlusion edges, and non-rigid deformations. We therefore predict a boundary-aware residual correction:
+\begin{equation}
+\mathbf{R}_{t\rightarrow t+1} = h\left(\phi_t^{(1)},\phi_{t+1}^{(1)},\mathbf{F}^{\mathrm{dense}}_{t\rightarrow t+1},\mathbf{B}_t,\mathbf{Q}_t\right),
+\end{equation}
+where $\mathbf{B}_t$ is the SAM-derived boundary map and $\mathbf{Q}_t$ is a confidence map combining slot and dense-correlation confidence. The final flow is
+\begin{equation}
+\mathbf{F}_{t\rightarrow t+1} = \mathbf{F}^{\mathrm{dense}}_{t\rightarrow t+1} + \mathbf{R}_{t\rightarrow t+1}.
+\end{equation}
+To preserve the object-centric prior, the residual is softly constrained to focus on boundary regions rather than unconstrained interior correction.
+
+Training is fully unsupervised. The overall objective is
+\begin{equation}
+\label{eq:total_loss_short}
+\mathcal{L} =
+\mathcal{L}_{\mathrm{unsup}}
++ \lambda_{\mathrm{sw}}\mathcal{L}_{\mathrm{segwarp}}
++ \lambda_{\mathrm{reg}}\mathcal{L}_{\mathrm{reg}}
++ \lambda_{\mathrm{cyc}}\mathcal{L}_{\mathrm{cycle}}
++ \lambda_{\mathrm{ord}}\mathcal{L}_{\mathrm{order}}
++ \lambda_{\mathrm{dist}}\mathcal{L}_{\mathrm{distill}},
+\end{equation}
+where $\mathcal{L}_{\mathrm{unsup}}$ is the standard bidirectional unsupervised flow objective, and $\mathcal{L}_{\mathrm{reg}}$ summarizes regularizers that (i) suppress residual energy away from boundaries, (ii) keep dense motion close to slot-affine motion in confident interiors, and (iii) emphasize boundary-focused refinement.
+
+To align dense flow with the object correspondence graph, we add segment warp consistency with $\mathbf{Y}_t=\mathrm{onehot}(L_t)$:
+\begin{equation}
+\mathcal{L}_{\mathrm{segwarp}} = \sum_t \left\| \mathrm{warp}(\mathbf{Y}_t,\mathbf{F}_{t\rightarrow t+1}) - \mathbf{A}_t\mathbf{Y}_{t+1} \right\|_1.
+\end{equation}
+For clips with $T\geq 3$, we also enforce long-gap correspondence composition:
+\begin{equation}
+\mathcal{L}_{\mathrm{cycle}} = \sum_t \left\| \mathbf{A}_{t,t+1}\mathbf{A}_{t+1,t+2} - \mathbf{A}_{t,t+2} \right\|_1.
+\end{equation}
+Finally, following prior self-distillation schemes, we maintain an EMA teacher and penalize student--teacher disagreement in confident regions after a short warm-up.
+
+Training follows a staged curriculum. We first optimize stride-1 clips without the residual branch to stabilize object correspondence and affine motion. We then increase temporal stride and enable dense residual refinement, layered-order regularization, and long-gap consistency, exposing the model to progressively larger displacement.
+
+% Our main configuration is: $T=5$, $S=32$, encoder width $40$, slot dimension $160$, temporal depth $3$, radii $(r_2,r_1)=(6,4)$, and prior-fusion weight $\alpha=0.72$. The residual refiner has $128$ hidden channels and $4$ residual convolution blocks. Optimization uses AdamW, OneCycle scheduling, mixed precision, gradient clipping, and EMA, which is consistent with prior unsupervised flow practice \cite{unflow,ddflow}.
+
+% Overall, the pipeline follows \emph{structure-first, dense-refine}: SAM organizes coherent motion units, temporal memory stabilizes them, layered affine reasoning builds a structured prior, dense correlation restores non-rigid detail, and boundary-aware refinement focuses corrections where estimation remains hardest.
+
+% \Blindtext
+% \blinditemize
+% \blindenumerate
+% \blinddescription
+% \blindmathtrue
+% \blindmathfalse
+% \blindmathpaper

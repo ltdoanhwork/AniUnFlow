@@ -1,0 +1,58 @@
+\chapter{Results}
+We evaluate AniFlowFormer-T on both synthetic and in-the-wild animation benchmarks,
+with a focus on the core challenges of 2D animation: large stylized motions, extended
+flat-color regions, and contour-driven structure. Our experiments are designed to
+answer three questions: (1) whether multi-frame temporal reasoning improves optical
+flow accuracy in animation; (2) how much the Latent Cost Memory contributes to
+long-range consistency; and (3) whether temporal aggregation can reduce drift and
+artifacts in sparse-texture regions.
+
+\section{Experimental Setup}
+
+\paragraph{Datasets.}
+We conduct experiments on two representative animation datasets.
+\textbf{AnimeRun}~\cite{animerun} is a full-scene synthetic dataset rendered in 2D
+cartoon style from open-source 3D animated movies. It provides dense ground-truth
+optical flow and features rich motion patterns, parallax backgrounds, multi-object
+interactions, and large flat-color regions. We use AnimeRun as the primary benchmark
+for pixel-wise flow evaluation.
+\textbf{ATD-12K}~\cite{animeinterp} is an in-the-wild 2D animation dataset commonly
+used for evaluation through frame interpolation. Since ground-truth optical flow is
+unavailable, we follow prior work and assess flow quality by substituting predicted
+flows into the AnimeInterp synthesis module.
+
+\paragraph{Metrics.}
+Following the evaluation protocol of AnimeRun~\cite{animerun}, we report the average
+endpoint error (EPE) and a detailed breakdown over animation-specific regions. In
+particular, we report EPE on non-occluded and occluded regions
+(\textbf{EPE\textsubscript{noc}}/\textbf{EPE\textsubscript{occ}}) using the provided
+occlusion masks, and errors within 10\,px of contour boundaries versus flat interior
+regions (\textbf{EPE\textsubscript{line}}/\textbf{EPE\textsubscript{flat}}) to reflect
+the strong structural separation in cartoons. We further group errors by motion
+magnitude based on ground-truth flow: \textbf{small} ($s<10$\,px),
+\textbf{medium} ($10 \le s < 50$\,px), and \textbf{large} ($s>50$\,px). For ATD-12K,
+we report PSNR and SSIM of the interpolated intermediate frames, consistent with
+AnimeInterp~\cite{animeinterp}.
+
+\subsection{Training Details}
+
+AniFlowFormer-T is trained in unsupervised and semi-supervised settings. For AnimeRun,
+ground-truth flow is used only for evaluation; training remains unsupervised unless
+explicitly stated otherwise. During training, frames are cropped to $384 \times 768$,
+and the temporal window size is $K=5$ unless stated otherwise. We use AdamW with an
+initial learning rate of $1\times 10^{-4}$ and cosine decay. Data augmentation includes
+random scaling, horizontal flipping, contour-jitter perturbation, and mild color
+augmentation designed to preserve line-art structure.
+
+\paragraph{Implementation Details.}
+AniFlowFormer-T is implemented in PyTorch and trained with mixed precision. Flow is
+predicted at $1/4$ resolution and upsampled using a context-guided convolutional
+layer. Temporal matching is computed at scales $\{1/4, 1/8, 1/16\}$. We train with a
+batch size of 4 on A100-80GB GPUs for 150k iterations, with a total training budget of
+approximately 48 hours.
+
+\paragraph{Inference.}
+At inference time, the KV-cache in the Latent Cost Memory enables streaming evaluation
+over long sequences with negligible overhead compared to two-frame processing.
+
+

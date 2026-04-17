@@ -1,0 +1,63 @@
+\chapter{Background and Related Works}
+
+\section{Background}
+Optical flow estimation aims to recover dense pixel-wise motion fields between consecutive frames and remains a core problem in computer vision, underpinning downstream tasks such as frame interpolation, video restoration, motion transfer, tracking, and temporally consistent video synthesis. In natural-image settings, the field has been substantially advanced by supervised learning on large synthetic datasets and standardized benchmarks. FlowNet demonstrated that optical flow can be learned end-to-end with convolutional networks and introduced the synthetic FlyingChairs dataset to compensate for the scarcity of dense real-world labels, while subsequent large-scale synthetic datasets further increased realism, variation, and scale for training modern models. MPI Sintel then emerged as a challenging benchmark with very long sequences, large motions, motion blur, defocus blur, and atmospheric effects, becoming one of the main testbeds for high-performance optical flow estimation.
+
+Recent supervised optical flow architectures have also shifted from purely local matching toward stronger global reasoning and more expressive motion representations. RAFT introduced multi-scale 4D all-pairs correlation volumes and iteratively updates a single high-resolution flow field, establishing a strong recurrent baseline. Building on this trend, GMFlow reformulated optical flow as a global matching problem using Transformer-based feature enhancement and softmax matching, while FlowFormer encoded the 4D cost volume into a latent cost memory and decoded flow with a recurrent Transformer decoder. Beyond two-frame estimation, VideoFlow and MemFlow showed that explicitly exploiting temporal context across multiple frames can improve estimation in difficult regions, especially under occlusion and long-range motion, with MemFlow further introducing memory read-out and update modules for online historical motion aggregation.
+
+Despite this progress, extending natural-scene optical flow methods to 2D animation remains non-trivial because the visual and motion statistics of animation differ fundamentally from those of natural imagery. As noted by AnimeRun, natural images typically exhibit complex textures, shading, and blur, whereas 2D cartoons are generally composed of flat color pieces with explicit contour lines. These stylized properties greatly weaken local texture cues and make correspondence in homogeneous regions more ambiguous. In addition, existing animation-oriented correspondence datasets were often built under simplified settings: AnimeRun explicitly contrasts its full-scene construction with CreativeFlow+, where each sample contains only a single model rendered in cartoon style with a static background and simple predefined motion, lacking simultaneous background motion, multi-character interaction, cross-object occlusion, and long coherent action sequences.
+
+Another central challenge is supervision. Dense optical flow ground truth for real animation is extremely difficult to obtain: prior work on unsupervised and multi-frame learning emphasizes that no sensor can directly capture true optical flow, while manual annotation of dense correspondences is intractable at scale. This has motivated both synthetic supervision and unsupervised objectives based on photometric reconstruction, bidirectional consistency, and occlusion reasoning. Representative unsupervised methods such as UnFlow bypass dense labels with occlusion-aware bidirectional losses, and multi-frame unsupervised formulations further show that three-frame reasoning improves occlusion handling relative to pairwise learning. However, these paradigms were largely developed for natural-scene imagery, where their underlying assumptions do not fully match the appearance and motion patterns of stylized animation.
+
+To narrow this gap, recent datasets have begun to synthesize animation-specific correspondence supervision from 3D assets rendered in 2D styles. AnimeRun converts open-source 3D movies into full-scene 2D cartoon sequences and provides both pixel-wise optical flow and region-wise segment matching labels, with moving backgrounds, richer composition, larger motion magnitudes, and longer-shot temporal continuity than earlier animation datasets. More recently, LinkTo-Anime introduced a cel-anime-specific optical flow dataset generated through 3D model rendering, with forward and backward flow, occlusion masks, and skeletal annotations across 395 video sequences, including 24,230 training frames. Taken together, these developments suggest that correspondence in animation should be treated as an inherently spatio-temporal problem in which robust estimation depends not only on pairwise appearance matching but also on global correspondence reasoning, temporal aggregation, and memory of past motion.
+
+In this work, we build on these insights and target optical flow estimation specifically for animation scenarios. Our method is designed to better exploit multi-frame temporal structure and global correspondence cues, with the goal of handling stylized appearance, sparse local texture, long-range motion, and persistent occlusion more effectively than approaches transferred directly from natural-video benchmarks.
+
+
+\section{Related Works}
+\subsection{Supervised Optical Flow}
+Supervised optical flow research has progressed from convolutional feature pyramids
+toward globally attentive matching and spatio-temporal modeling. Early learning-based
+methods such as FlowNet and FlowNet2~\cite{dosovitskiy2015flownet,ilg2017flownet2}
+introduced end-to-end regression of dense motion fields, while pyramid-and-warping
+frameworks including PWC-Net~\cite{pwcnet} and LiteFlowNet~\cite{hui2018liteflownet}
+improved efficiency and accuracy through coarse-to-fine refinement. Despite strong
+performance, these pipelines fundamentally rely on local correlation windows and
+iterative warping, which makes them brittle under large displacements and ambiguous
+correspondences in textureless regions.
+
+RAFT~\cite{raft} marked a major shift by constructing an all-pairs 4D correlation
+volume and refining flow via recurrent updates, substantially improving accuracy on
+challenging benchmarks. However, its inference cost scales linearly with the number
+of refinement iterations, and its two-frame formulation can still accumulate drift
+when long-range temporal context is required. Subsequent extensions, including
+GMA~\cite{gma}, CRAFT~\cite{craft}, and SKFlow~\cite{skflow}, augment RAFT-style
+refinement with stronger aggregation or attention, yet largely preserve the same
+iterative paradigm.
+
+More recent approaches employ Transformers to overcome the locality of convolutional
+cost volumes by enabling global feature interaction and long-range matching. GMFlow~\cite{gmflow}
+and related variants formulate correspondence as global matching through attention-enhanced
+features, while FlowFormer and FlowFormer++~\cite{flowformer,flowformerpp} introduce
+cost-token representations and masked cost-volume pretraining to improve robustness
+and scalability. In parallel, supervised multi-frame methods such as VideoFlow~\cite{videoflow2023}
+highlight the benefits of explicit spatio-temporal reasoning for occlusions and ambiguous
+motion. Overall, the literature reflects a clear transition from local, convolution-driven
+pipelines to globally attentive and temporally informed architectures, which motivates our
+emphasis on multi-frame temporal aggregation and long-range correspondence modeling for
+stylized animation.
+
+
+\subsection{Unsupervised Optical Flow}
+Unsupervised optical flow estimation addresses the lack of dense ground-truth annotations by relying on self-supervision derived from photometric consistency, spatial regularization, and occlusion handling. Early approaches such as UnFlow \cite{upflow} and DDFlow \cite{ddflow} demonstrated that warping-based photometric losses, together with smoothness priors, can produce competitive two-frame flow estimates without labels. Subsequent work improved the reliability of self-supervision through hierarchical motion models and upsampling strategies, exemplified by UPFlow \cite{upflow} and ASFlow \cite{asflow}, which introduce more stable multi-scale refinement for textureless regions and fine motion boundaries. These methods, however, remain limited by their dependence on two-frame cues and their difficulty in handling large motions and heavy occlusions.
+
+More recent efforts extend unsupervised learning to multi-frame and structurally guided settings. SMURF \cite{smurf} integrates RAFT-style architectures with multi-frame self-teaching and full-image warping, achieving substantial gains by exploiting longer-range temporal cues. Complementary directions incorporate higher-level structural signals or domain adaptation; FlowDA \cite{flowda} and other mean-teacher frameworks aim to bridge the domain gap between synthetic and real videos. Collectively, recent unsupervised approaches emphasize richer temporal modeling, structural guidance, and cross-domain consistency—highlighting the need for models that can exploit multi-frame information more effectively, which motivates our design.
+
+
+% \Blindtext
+% \blinditemize
+% \blindenumerate
+% \blinddescription
+% \blindmathtrue
+% \blindmathfalse
+% \blindmathpaper
