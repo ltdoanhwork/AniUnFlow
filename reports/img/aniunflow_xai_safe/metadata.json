@@ -1,0 +1,23 @@
+{
+  "scene": "cami_02_05_A",
+  "centers": [
+    31,
+    43
+  ],
+  "records": [
+    {
+      "frame": "0306",
+      "center": 31,
+      "structure_panel": "reports/img/aniunflow_xai_safe/panels/cami_02_05_A_0306_xai_structure.png",
+      "diagnostic_panel": "reports/img/aniunflow_xai_safe/panels/cami_02_05_A_0306_xai_diagnostics.png"
+    },
+    {
+      "frame": "0318",
+      "center": 43,
+      "structure_panel": "reports/img/aniunflow_xai_safe/panels/cami_02_05_A_0318_xai_structure.png",
+      "diagnostic_panel": "reports/img/aniunflow_xai_safe/panels/cami_02_05_A_0318_xai_diagnostics.png"
+    }
+  ],
+  "config_path": "/home/serverai/ltdoanh/AniUnFlow/workspaces/v5_4_sam_propagation_memory/config.yaml",
+  "checkpoint_path": "/home/serverai/ltdoanh/AniUnFlow/workspaces/v5_4_sam_propagation_memory/best.pth"
+}

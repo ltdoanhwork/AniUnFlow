@@ -1,0 +1,51 @@
+{
+  "scene": "cami_02_05_A",
+  "start": 28,
+  "pairs": 6,
+  "base_fps": 12.0,
+  "output_fps": 24.0,
+  "models": [
+    "UPFlow",
+    "Object-memory baseline",
+    "AniUnFlow"
+  ],
+  "records": [
+    {
+      "center": 28,
+      "frame": "0303",
+      "next_frame": "0304",
+      "saved_dir": "demo/fps_demo/frames/0028_0303"
+    },
+    {
+      "center": 29,
+      "frame": "0304",
+      "next_frame": "0305",
+      "saved_dir": "demo/fps_demo/frames/0029_0304"
+    },
+    {
+      "center": 30,
+      "frame": "0305",
+      "next_frame": "0306",
+      "saved_dir": "demo/fps_demo/frames/0030_0305"
+    },
+    {
+      "center": 31,
+      "frame": "0306",
+      "next_frame": "0307",
+      "saved_dir": "demo/fps_demo/frames/0031_0306"
+    },
+    {
+      "center": 32,
+      "frame": "0307",
+      "next_frame": "0308",
+      "saved_dir": "demo/fps_demo/frames/0032_0307"
+    },
+    {
+      "center": 33,
+      "frame": "0308",
+      "next_frame": "0309",
+      "saved_dir": "demo/fps_demo/frames/0033_0308"
+    }
+  ],
+  "report_panel": "reports/img/fps_demo/cami_02_05_A_fps_interpolation_sheet.png"
+}

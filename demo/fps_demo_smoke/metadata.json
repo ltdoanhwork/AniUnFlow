@@ -1,0 +1,27 @@
+{
+  "scene": "cami_02_05_A",
+  "start": 30,
+  "pairs": 2,
+  "base_fps": 12.0,
+  "output_fps": 24.0,
+  "models": [
+    "UPFlow",
+    "Object-memory baseline",
+    "AniUnFlow"
+  ],
+  "records": [
+    {
+      "center": 30,
+      "frame": "0305",
+      "next_frame": "0306",
+      "saved_dir": "demo/fps_demo_smoke/frames/0030_0305"
+    },
+    {
+      "center": 31,
+      "frame": "0306",
+      "next_frame": "0307",
+      "saved_dir": "demo/fps_demo_smoke/frames/0031_0306"
+    }
+  ],
+  "report_panel": "reports/img/fps_demo/cami_02_05_A_fps_interpolation_sheet.png"
+}

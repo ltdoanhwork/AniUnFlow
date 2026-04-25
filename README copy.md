@@ -75,3 +75,6 @@ flowchart LR
   classDef opt fill:#efe,stroke:#363,stroke-width:1px
   class ENC,CT1,CT2,CT3,LCM,GTR,DEC,OCC k
   class SAM,opt opt
+
+
+huggingface-cli download LecterF/LinkTo-Anime --allow-patterns "test/**" --cache-dir ./LinkTo-Anime_partial

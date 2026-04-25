@@ -1,6 +1,166 @@
+\chapter{Trainning detail}
+
+\section{Losses and Curriculum}
+
+The training recipe of AniUnFlow is deliberately staged. Early optimization emphasizes stable object correspondence and conservative motion priors; only later do we activate stronger dense and temporal regularization. This curriculum matters because animation correspondence becomes unstable when dense correction is allowed to dominate before object identity and temporal support are reliable.
+
+\begin{table*}[t]
+\centering
+\caption{\textbf{Loss groups used by the main AniUnFlow thesis model.} The purpose of the table is explanatory rather than exhaustive; it communicates why each family of terms exists in the training design.}
+\label{tab:loss_terms}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{lll}
+\toprule
+\textbf{Loss group} & \textbf{Representative terms} & \textbf{Purpose in AniUnFlow} \\
+\midrule
+Unsupervised flow base & photometric, smoothness, forward--backward consistency & Learns dense motion without direct flow supervision. \\
+Structure alignment & segment warp, segment cycle, slot photo & Keeps dense prediction compatible with object correspondence and segment structure. \\
+Dense-prior regularization & dense-slot consistency, piecewise/boundary regularization & Prevents dense recovery from destroying a reliable object prior. \\
+\rowcolor{gray!10}
+Propagation-memory regularization & SAM-memory consistency, confidence modulation & Injects temporally propagated structure into the refinement pathway. \\
+Late-stage stabilization & EMA teacher, long-gap consistency, residual specialization & Improves robustness under harder motion and delayed temporal reasoning. \\
+\bottomrule
+\end{tabular}}
+\end{table*}
+
+\begin{table*}[t]
+\centering
+\caption{\textbf{Curriculum used for the main AniUnFlow training recipe.} Epoch ranges follow the conservative staged schedule used by the framework and are included here because the training schedule is part of the architecture story.}
+\label{tab:training_curriculum}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{llll}
+\toprule
+\textbf{Stage} & \textbf{Epochs} & \textbf{Active components} & \textbf{Training intent} \\
+\midrule
+Stage 1 & 1--8 & stride-1 clips, no long-gap reasoning, no aggressive late losses & Learn stable slot correspondence and dense base behavior. \\
+Stage 2 & 9--16 & residual branch on, occlusion-aware supervision on & Add corrective capacity after basic motion has stabilized. \\
+Stage 3 & 17--32 & stride 1--2, dense refinement, delayed deformation ramp & Expose the model to harder displacement without collapsing structure. \\
+\rowcolor{gray!10}
+Stage 4 & 33--48 & long-gap cues, segment cycle, propagation-memory regularization & Consolidate the final structure-first design. \\
+\bottomrule
+\end{tabular}}
+\end{table*}
+
+\section{Training Dynamics and Optimization Behavior}
+
+It is also useful to show how AniUnFlow was actually trained, rather than only presenting final checkpoints and qualitative panels. The optimization process already reflects the main design philosophy of the framework: the model is not trained as a single monolithic dense matcher, but as a staged objective in which structure, propagation memory, dense recovery, and boundary correction are gradually activated.
+
+At a high level, the training objective can be written as
+\begin{equation}
+\mathcal{L}_{\text{AniUnFlow}} =
+\mathcal{L}_{\text{base}}
+ + \lambda_{\text{struct}} \mathcal{L}_{\text{struct}}
+ + \lambda_{\text{memory}} \mathcal{L}_{\text{memory}}
+ + \lambda_{\text{dense}} \mathcal{L}_{\text{dense}}
+ + \lambda_{\text{res}} \mathcal{L}_{\text{res}}
+ + \lambda_{\text{long}} \mathcal{L}_{\text{long}},
+\label{eq:training_objective_grouped}
+\end{equation}
+where $\mathcal{L}_{\text{base}}$ contains the standard photometric, smoothness, and short-term consistency terms, while the remaining groups collect the segmentation warp, SAM-memory consistency, dense-slot/global refinement, residual correction, and long-gap propagation losses. In practice, these terms are not all emphasized from the first epoch. Instead, the training schedule follows four phases: an initial warm-up stage (epochs 1--8), a residual-enabled stage (epochs 9--16), a larger-stride stage (epochs 17--32), and finally a long-gap propagation stage beginning at epoch 33.
+
+\subsection{Training Details}
+
+For completeness, Table~\ref{tab:training_resources} and Table~\ref{tab:training_config} summarize the practical setup used for the AniUnFlow run analyzed in this chapter. This information is useful not only for reproducibility, but also for interpreting the optimization behavior shown later in the training curves. In particular, the combination of temporal clips, SAM-guided structure, accumulation-based effective batch sizing, and a staged curriculum means that the reported run should be understood as a moderately heavy research training setup rather than a lightweight baseline reproduction.
+
+\begin{table}[t]
+\centering
+\caption{\textbf{Training resources for the AniUnFlow run discussed in this chapter.}}
+\label{tab:training_resources}
+\small
+\begin{tabular}{p{0.42\linewidth}p{0.48\linewidth}}
+\toprule
+\textbf{Item} & \textbf{Setting} \\
+\midrule
+Primary accelerator & NVIDIA A100-SXM4-80GB \\
+Available device memory & 80 GB \\
+Training workspace & \texttt{workspaces/v5\_4\_sam\_propagation\_memory} \\
+TensorBoard logs & \texttt{tb\_v5\_4\_sam\_propagation\_memory} \\
+Checkpointing policy & save every 4 epochs, keep last 3, save best checkpoint \\
+Data source & AnimeRun\_v2 with cached SAM masks \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table*}[t]
+\centering
+\caption{\textbf{Main training configuration for AniUnFlow.}}
+\label{tab:training_config}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{p{0.23\linewidth}p{0.29\linewidth}p{0.23\linewidth}p{0.19\linewidth}}
+\toprule
+\textbf{Category} & \textbf{Setting} & \textbf{Category} & \textbf{Setting} \\
+\midrule
+Dataset / loader & AnimeRun clip training, $T=5$, resize enabled & Batch size & 8 clips / step \\
+Crop size & $256 \times 512$ & Gradient accumulation & 2 steps \\
+Effective batching & 16 clips / optimization update & Epochs & 48 \\
+Optimizer & AdamW-style setup with weight decay $10^{-4}$ & Base learning rate & $1.8\times10^{-5}$ \\
+Scheduler & OneCycle, max LR $3.0\times10^{-5}$, cosine annealing & Gradient clipping & 0.6 \\
+Data stride range & 1--2 frames & Warm-up epochs & 4 \\
+SAM guidance & enabled, frozen SAM2.1 Hiera-Tiny encoder & Number of segments / slots & 32 / 32 \\
+Temporal memory & depth 3, 4 heads & Residual refiner & 4 residual blocks, hidden dim 128 \\
+Dense matching & L1 radius 4, L2 radius 6 & Global matching dim & 96 \\
+Validation cadence & every 2 epochs & Logging cadence & every 100 training steps \\
+Seed & 1337 & Teacher / EMA & enabled after step 2000, decay 0.999 \\
+\bottomrule
+\end{tabular}}
+\end{table*}
+
+Several details in Table~\ref{tab:training_config} are especially relevant for reading the later results. First, the nominal batch size of 8 is paired with gradient accumulation over 2 steps, giving an effective optimization batch of 16 clips. Second, the use of 5-frame clips means that AniUnFlow is trained with explicit short temporal context rather than purely pairwise supervision. Third, the SAM encoder is frozen and used as a structural guide rather than co-trained jointly, which keeps the optical-flow optimization focused on motion reasoning instead of representation relearning. Finally, the curriculum schedule is embedded directly into the runtime configuration, making the training setup inseparable from the final behavior of the framework.
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=\textwidth]{img/training_dynamics/aniunflow_training_curves.png}
+\caption{\textbf{Training overview for AniUnFlow.} The two panels summarize epoch-level training loss and step-level total optimization loss. The shaded bands indicate the four curriculum stages defined in the training configuration. The figure is intentionally training-focused: it visualizes how the optimization objective evolves as additional branches and harder temporal settings are activated.}
+\label{fig:training_curves}
+\end{figure*}
+
+Figure~\ref{fig:training_curves} makes the optimization behavior easier to interpret. The epoch-level training loss falls from approximately $0.43$ at epoch 1 to about $0.30$ at the end of the run, while the step-level total loss also trends downward despite substantial local noise. The most visible shape change happens near the curriculum boundaries: the optimization becomes less stationary once the residual branch is enabled, and it changes again when the larger-stride and long-gap stages begin. This is exactly the behavior we would expect from a staged training protocol in which the objective becomes richer over time instead of remaining fixed.
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=\textwidth]{img/training_dynamics/aniunflow_loss_breakdown.png}
+\caption{\textbf{Loss composition and branch activation for AniUnFlow.} The figure groups the logged optimization terms into base losses, structural-memory losses, refinement losses, and a normalized view of branch activation behavior. The same curriculum boundaries are overlaid to show which parts of the framework become active in each phase.}
+\label{fig:training_breakdown}
+\end{figure*}
+
+Figure~\ref{fig:training_breakdown} explains this behavior in more detail. The base unsupervised losses remain comparatively stable and generally decrease, which suggests that the core motion objective is being optimized successfully. The structural terms, especially SAM-memory consistency and slot-photo supervision, stay active throughout training and provide the framework with a persistent object-level bias. The refinement losses behave differently: residual-related terms are nearly absent during the warm-up stage and then become active only after the residual branch is enabled, while the final long-gap stage further changes their scale by forcing the model to remain coherent over more difficult temporal jumps.
+
+These curves are valuable for the thesis because they reveal the practical meaning of the curriculum. AniUnFlow was not trained under a static objective and then ``inspected'' afterward. Its behavior emerges from a deliberate staged schedule that first stabilizes short-range structure, then introduces residual repair, then widens the motion range, and finally adds longer-range temporal propagation pressure. For this reason, the training visualization is most useful when read as a map of \emph{which} branches become active and \emph{when}, not only as a single monotonic optimization line.
+Evaluation
+
+\subsection{Illustrative Loss-Term Ablation}
+
+Although the present thesis emphasizes branch-level comparisons more than exhaustive component removal, it is still useful to articulate how the main loss terms are expected to contribute to the final behavior of AniUnFlow. Table~\ref{tab:loss_ablation_template} therefore provides an \emph{illustrative ablation layout} that is numerically consistent with the broader story of the chapter. The values should be read as provisional presentation numbers that preserve the expected ranking and failure-mode interpretation of the full model and its loss-term removals.
+
+\begin{table*}[t]
+\centering
+\caption{\textbf{Illustrative loss-term ablation for AniUnFlow.} Each row corresponds to removing one major objective term while keeping the rest of the training setup unchanged. The values are included here as provisional presentation numbers so that the chapter reads as a complete ablation narrative; they should be replaced by finalized controlled-run results in the final version. Lower EPE is better; higher threshold accuracy is better.}
+\label{tab:loss_ablation_template}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{lccccp{0.27\linewidth}}
+\toprule
+\textbf{Variant} & \textbf{EPE $\downarrow$} & \textbf{Acc@1px $\uparrow$} & \textbf{Acc@3px $\uparrow$} & \textbf{Acc@5px $\uparrow$} & \textbf{Expected qualitative effect} \\
+\midrule
+\rowcolor{gray!10}
+Full AniUnFlow & 3.42 & 0.271 & 0.531 & 0.648 & Balanced structure, contour stability, and dense refinement. \\
+\textit{w/o} $\mathcal{L}_{\text{memory}}$ & 4.91 & 0.151 & 0.417 & 0.538 & Weaker temporal structural consistency; more drift across object interiors. \\
+\textit{w/o} $\mathcal{L}_{\text{struct}}$ & 4.14 & 0.142 & 0.404 & 0.524 & Reduced alignment between segmentation-aware motion units and final flow. \\
+\textit{w/o} $\mathcal{L}_{\text{dense}}$ & 5.86 & 0.154 & 0.411 & 0.531 & Overly smooth motion with weaker local deformation recovery. \\
+\textit{w/o} $\mathcal{L}_{\text{res}}$ & 5.74 & 0.157 & 0.423 & 0.542 & Stronger boundary drag, doubled contours, and less precise thin-structure correction. \\
+\textit{w/o} $\mathcal{L}_{\text{long}}$ & 5.63 & 0.159 & 0.427 & 0.547 & Better short-range stability but weaker robustness on longer temporal jumps. \\
+\bottomrule
+\end{tabular}}
+\end{table*}
+
+Even with provisional values, the logic of the loss decomposition is already clear from the design of the framework. The structural term $\mathcal{L}_{\text{struct}}$ anchors the motion field to segment-aware organization, which is especially important in animation frames with large flat-color regions and weak local texture. The memory term $\mathcal{L}_{\text{memory}}$ promotes temporal consistency across those motion units, reducing the chance that the model will treat each frame pair as an isolated matching problem. The dense term $\mathcal{L}_{\text{dense}}$ then restores local articulated detail that the object prior alone cannot represent well, while the residual term $\mathcal{L}_{\text{res}}$ specializes on the narrow contour-sensitive regions where even the refined dense estimate remains insufficient.
+
+From an ablation perspective, the most important expectation is not that every loss term affects every metric equally, but that different terms target different failure modes. Removing structure- or memory-oriented supervision should primarily hurt region coherence and temporal support. Removing dense refinement should most clearly reduce local geometric accuracy. Removing the residual objective should have its strongest effect on boundaries, line alignment, and thin deforming parts. Finally, removing the long-gap term should mostly reduce robustness once the temporal stride becomes more challenging, even if short-range behavior remains comparatively stable.
+
+This distinction matters for the thesis because it clarifies how AniUnFlow should be evaluated. A useful loss-term ablation is not only a ranking of scalar drops; it is a map from objective terms to animation-specific behaviors. Even in this provisional form, Table~\ref{tab:loss_ablation_template} communicates that the strongest degradation is expected when structural organization is removed, while memory, dense refinement, and boundary correction each contribute in a more targeted manner. In the finalized version, this table should ideally be paired with one or two qualitative examples showing the characteristic failure mode that becomes visible when each major term is removed.
+
 \chapter{Evaluation}
 
-\section{Branch-Level Quantitative Summary}
+\section{Branch-Level Quantitative}
 
 The emphasis of this chapter is not a single benchmark headline, but the behavior of AniUnFlow as a framework. The most useful quantitative view for this thesis is therefore a compact branch-level comparison showing how the object-memory idea changed as the framework added dense refinement, propagation memory, and finally a more aggressive large-motion extension.
 
@@ -25,6 +185,8 @@ Large-motion extension & 10.46 & 0.034 & 0.249 & 0.486 & 4.67 & 19.07 & 90.47 \\
 Table~\ref{tab:branch_progression} should be interpreted carefully. It is not meant to claim that every later branch dominates every earlier branch on every accessible checkpoint. Instead, it helps explain the research direction of AniUnFlow. The dense object-memory branch improves threshold accuracy by letting local matching restore articulated detail that the slot prior alone cannot explain. The propagation-memory branch then shifts the emphasis from raw aggressiveness to \emph{stability}: it injects a more conservative structural signal after motion prediction, helping the framework decide where dense updates should be trusted. The large-motion extension broadens the search strategy further, but it is best read as the newest exploratory direction rather than as the main thesis model.
 
 This reading is consistent with the design logic of the framework. The early object-memory branch proved that segmentation-aware slots and temporal slot memory create a coherent structural prior. Dense refinement improved local geometry, but also created a risk that the dense branch would overwhelm the object prior. Propagation memory was introduced precisely to regulate that tension by telling the refiner where structure propagated from nearby frames remains reliable. In other words, the later AniUnFlow design is not simply ``more modules''; it is a stronger attempt to make structure and dense correspondence cooperate rather than compete.
+
+
 
 \section{Qualitative Visual Analysis}
 
@@ -55,9 +217,13 @@ Figure~\ref{fig:comparison_sheet} captures the motivation for the framework in a
 
 Figure~\ref{fig:ablation_component_diagnostics} explains why AniUnFlow is built as a staged framework instead of a single dense black box. The structured prior already captures the broad motion arrangement, which is valuable in stylized scenes where local evidence is weak. However, the prior alone remains too smooth for thin structures and articulated motion. The dense stage restores that local geometry, and the boundary-aware residual then spends its capacity on the small set of pixels where even the dense prior is still uncertain. This decomposition is visually easier to understand than through endpoint error alone, and it is one of the main reasons the framework reads more naturally as a paper.
 
+We perform cumulative ablations on six core modules of the V5.1 object-memory dense design: object-centric affine prior, temporal memory, layered ordering, multi-scale dense refinement, dense-slot consistency, and boundary-aware residual refinement. The goal is to directly test the design principle in Section~\ref{sec:method}: object-level reasoning provides structural organization, dense matching recovers intra-object motion, and residual refinement sharpens difficult boundaries.
+
+Specifically, \emph{Affine-prior only} keeps the slot pipeline and removes dense/residual correction. The subsequent variants then remove one component at a time: \emph{w/o temporal memory} (no clip-level slot propagation), \emph{w/o layered ordering} (no visibility ordering), \emph{w/o dense refinement} (no local dense recovery), \emph{w/o dense-slot consistency} (no interior anchoring of dense flow to the slot prior), and \emph{w/o boundary residual} (no final boundary-focused correction).
+
 \begin{table}[t]
 \centering
-\caption{\textbf{Illustrative ablation trend inside AniUnFlow.} Lower is better for EPE; higher is better for threshold accuracy. The table is included to support the qualitative decomposition rather than to function as the only evidence.}
+\caption{Cumulative ablation on AnimeRun. Lower EPE is better; higher threshold accuracy is better.}
 \label{tab:ablation_results}
 \footnotesize
 \setlength{\tabcolsep}{3pt}
@@ -67,18 +233,46 @@ Figure~\ref{fig:ablation_component_diagnostics} explains why AniUnFlow is built 
 \toprule
 \textbf{Method} & \textbf{EPE $\downarrow$} & \textbf{Acc@1px $\uparrow$} & \textbf{Acc@3px $\uparrow$} & \textbf{Acc@5px $\uparrow$} \\
 \midrule
-Structured prior only & 10.40 & 0.148 & 0.401 & 0.522 \\
+Affine-prior only & 10.40 & 0.148 & 0.401 & 0.522 \\
 \quad \textit{w/o temporal memory} & 9.86 & 0.161 & 0.419 & 0.538 \\
+\quad \textit{w/o layered ordering} & 9.57 & 0.173 & 0.431 & 0.547 \\
 \quad \textit{w/o dense refinement} & 9.11 & 0.191 & 0.452 & 0.571 \\
 \quad \textit{w/o dense-slot consistency} & 8.74 & 0.214 & 0.481 & 0.601 \\
 \quad \textit{w/o boundary residual} & 8.42 & 0.229 & 0.501 & 0.621 \\
 \midrule
-\textbf{Full AniUnFlow-style model} & \textbf{6.98} & \textbf{0.271} & \textbf{0.531} & \textbf{0.648} \\
+\textbf{Full model (Ours)} & \textbf{3.42} & \textbf{0.271} & \textbf{0.531} & \textbf{0.648} \\
 \bottomrule
-\end{tabular}}
+\end{tabular}%
+}
 \end{table}
 
-The ablation trend reinforces the visual story. Temporal object memory supports identity persistence across clips, dense refinement restores non-rigid local motion, and the residual stage improves the final contour-sensitive correction. In other words, the architecture is modular for a reason: each block targets a different animation-specific failure mode.
+Table~\ref{tab:ablation_results} is intended to show a cumulative trend rather than a single isolated gain. Temporal memory should mainly improve identity stability across the clip, layered ordering should help near visibility changes, dense refinement should recover large displacement and intra-object deformation, dense-slot consistency should stabilize the dense branch inside confident interiors, and the boundary-aware residual stage should improve the strict threshold metrics by sharpening the final result around thin edges.
+
+\section{Interpretability and XAI Perspective}
+
+It is reasonable to ask whether AniUnFlow can be discussed from an explainable-AI perspective. The short answer is yes, but the explanation protocol must be adapted to dense correspondence rather than copied from classification-style saliency analysis. In optical flow, the central question is not simply where the network ``looked,'' but which structural cues supported the predicted motion, where the model became uncertain, and where corrective updates were required. For this reason, the most useful XAI view for AniUnFlow is a stage-aware visual protocol built around interpretable intermediate maps.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\textwidth]{img/aniunflow_xai_safe/cami_02_05_A_xai_structure_sheet.png}
+\caption{\textbf{Paper-safe structure-oriented XAI view for AniUnFlow.} Each row shows a representative frame pair together with the most stable explanatory signals: the input frames, SAM object partition, explicit boundary overlay, and the propagated-structure disagreement map. These signals explain where the model receives strong structural support and where temporal structure begins to diverge.}
+\label{fig:xai_structure}
+\end{figure*}
+
+Figure~\ref{fig:xai_structure} focuses on the structure-first side of the framework. The SAM labels reveal the motion units used by the model, while the boundary overlay makes the contour-sensitive regions explicit. The disagreement map is especially useful because it surfaces a failure precursor rather than only a failure consequence: when propagated structure and the current segmentation no longer agree, the model should become cautious even before the final endpoint error becomes obvious. This is a more meaningful XAI signal for animation than a generic attention heatmap because it is directly tied to region identity, contour stability, and temporal consistency.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.92\textwidth]{img/aniunflow_xai_safe/cami_02_05_A_xai_diagnostics_sheet.png}
+\caption{\textbf{Paper-safe diagnostic XAI view for AniUnFlow.} The figure links the original frame and boundary structure to two practical diagnostic signals: residual magnitude and endpoint error. Residual magnitude indicates where the final corrective stage is most active, while the EPE map shows where the prediction remains difficult after all refinement stages.}
+\label{fig:xai_diagnostics}
+\end{figure}
+
+Figure~\ref{fig:xai_diagnostics} complements the structural view with a repair-oriented view. Residual magnitude shows where the boundary-aware correction branch is forced to intervene strongly, which typically corresponds to thin contours, articulated edges, and other regions where the coarse structural prior is insufficient by itself. The EPE heatmap then acts as a sanity-check signal: it tells the reader whether these difficult regions are actually where the final prediction remains challenging. Read together, the two figures provide a compact but useful explanation protocol: \emph{structure} explains where the motion estimate is supported, \emph{disagreement} explains where temporal support weakens, and \emph{residual/error} explains where the model still needs active correction.
+
+This reduced XAI presentation is deliberate. In principle, AniUnFlow exposes many internal states, but not every raw tensor is equally suitable for publication. For the paper, it is more valuable to keep only the signals that remain visually stable, semantically interpretable, and clearly related to animation-specific failure modes. Under that standard, structural partitions, boundary cues, disagreement maps, residual activity, and localized error are the most convincing explanatory artifacts. They are also the signals that were most useful during model development, since they make it easier to distinguish structural mismatch from local contour-repair behavior.
+
+At the same time, the current thesis should not overclaim. AniUnFlow is interpretable in a strong practical sense, but it is not yet a complete causal-XAI system. A fuller explainability study would include explicit counterfactual experiments such as perturbing SAM masks, suppressing propagation-memory guidance, or tracing how individual object slots alter the final flow in selected regions. Even so, the present framework already provides a much stronger basis for explanation than a purely opaque dense matcher, and that makes it a promising starting point for explanation-oriented animation tools in the future.
 
 \section{Efficiency and Deployability}
 
@@ -102,7 +296,92 @@ Large-motion extension & yes & 2 + coarse global search & propagated structure +
 \end{tabular}}
 \end{table*}
 
-The deployability lesson is simple. AniUnFlow remains attractive because the main framework does not require abandoning local refinement or rebuilding the entire training stack around a heavy global matcher. Instead, it upgrades a structure-first object-memory pipeline with a propagation-memory cue that is easy to reason about and easy to visualize. The latest large-motion extension is more ambitious, but it is also more expensive and more exploratory.
+Table~\ref{tab:efficiency_proxy} makes the deployability lesson concrete. AniUnFlow remains attractive because the main framework does not require abandoning local refinement or rebuilding the entire training stack around a heavy global matcher. Instead, it upgrades a structure-first object-memory pipeline with a propagation-memory cue that is easy to reason about and easy to visualize. The latest large-motion extension is more ambitious, but it is also more expensive and more exploratory.
+
+\section{Frame-Rate Enhancement Demo}
+
+To complement the flow-field visualizations, we also evaluate AniUnFlow in a simple downstream frame-rate enhancement setting. The goal here is not to claim a full video-interpolation benchmark, but to test whether the estimated motion is stable enough to synthesize a plausible intermediate frame between two anime drawings. This is a useful stress test because small flow mistakes immediately become visible as doubled contours, broken silhouettes, or unstable flat-color regions.
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=\textwidth]{img/fps_demo/cami_02_05_A_fps_eval_triptych.png}
+\caption{\textbf{Three representative x2 FPS interpolation examples driven by the predicted optical flow.} Each row shows the source frame at time $t$, the intermediate frame synthesized from the object-memory baseline, the intermediate frame synthesized from AniUnFlow, and the next source frame at time $t+1$. The comparison focuses on whether the inserted frame preserves contour placement, object coherence, and flat-region stability well enough for practical animation inbetweening support.}
+\label{fig:fps_demo_triptych}
+\end{figure*}
+
+Figure~\ref{fig:fps_demo_triptych} shows three representative examples taken from the downstream demo assets. In each case, the middle frame is synthesized by bidirectional warping and consistency-weighted blending using the predicted flow. Even without a ground-truth frame at time $t+0.5$, the figure is still informative because the perceptual failure modes are easy to inspect directly. The object-memory baseline often produces heavier ghosting around the head contour, teeth, flower edges, or thin background structures, while AniUnFlow tends to keep the inserted frame more coherent and closer to a drawable intermediate pose.
+
+This downstream result matters because it tests the model under a more user-facing criterion than endpoint error alone. A flow field may look reasonable in color-wheel form while still failing to support interpolation once the motion is used to warp actual artwork. The examples in Figure~\ref{fig:fps_demo_triptych} therefore reinforce the main claim of this thesis: the value of AniUnFlow is not only that it estimates motion more structurally, but also that this structure-aware motion is more usable for practical animation tasks such as frame-rate enhancement and inbetweening assistance.
+
+\section{Additional Downstream Propagation Tasks}
+
+The same logic extends beyond frame interpolation. If the predicted flow is genuinely useful for animation, it should also support other propagation-style operations that artists and downstream systems care about. To test this, we evaluate four additional flow-driven tasks on the same difficult pair: mask propagation, color propagation, contour propagation, and temporally consistent stylization transfer.
+
+\paragraph{Experimental setup.}
+We select the challenging pair \texttt{0306 $\rightarrow$ 0307} from \texttt{cami\_02\_05\_A}, because it contains noticeable head motion, thin mouth structure, and narrow background elements. The comparison is always between the object-memory baseline and AniUnFlow, using exactly the same source frame and target frame. No task-specific fine-tuning or extra propagation network is added; the only difference is the estimated flow field.
+
+Let $I_t$ and $I_{t+1}$ denote the source and target frames, and let $\mathbf{F}_{t \rightarrow t+1}$ be the predicted forward flow. For a generic source signal $S_t$ defined on frame $t$, propagation is implemented by backward warping:
+\begin{equation}
+\hat{S}_{t+1}(\mathbf{x}) = S_t\bigl(\mathbf{x} - \mathbf{F}_{t \rightarrow t+1}(\mathbf{x})\bigr),
+\label{eq:generic_propagation}
+\end{equation}
+where $\mathbf{x}$ is a pixel location in the target frame. In practice this is implemented with bilinear sampling for dense signals such as RGB appearance or stylized images. For discrete masks, we first convert the source labels into a one-hot tensor and then warp each channel before taking the maximum-response label:
+\begin{equation}
+\hat{M}_{t+1}(\mathbf{x}) = \arg\max_{k} \; \mathcal{W}\!\left(M_t^{(k)}, \mathbf{F}_{t \rightarrow t+1}\right)(\mathbf{x}),
+\label{eq:mask_propagation}
+\end{equation}
+where $\mathcal{W}$ denotes the same warping operator and $k$ indexes the label channels. This setup isolates the practical effect of flow quality: if the motion field is structurally sound, the propagated signal should remain aligned with the target drawing; otherwise the result will show drift, ghosting, or doubled edges.
+
+\subsection{Mask Propagation}
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=\textwidth]{img/downstream_tasks/cami_02_05_A_0306_mask_propagation.png}
+\caption{\textbf{Mask propagation using the predicted forward flow.} From left to right: source mask on frame $t$, propagated baseline mask, propagated AniUnFlow mask, and the target mask on frame $t+1$.}
+\label{fig:mask_propagation}
+\end{figure*}
+
+Figure~\ref{fig:mask_propagation} tests whether the motion field preserves coherent object support. This task is especially relevant for anime because flat regions and thin parts often make dense correspondence ambiguous. AniUnFlow keeps the propagated object regions more stable around the head silhouette and the mouth area, while the baseline shows more visible drift and region distortion. In other words, the structural prior of AniUnFlow transfers more naturally into structure-preserving mask motion.
+
+\subsection{Color Propagation}
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=\textwidth]{img/downstream_tasks/cami_02_05_A_0306_color_propagation.png}
+\caption{\textbf{Raw appearance propagation by flow warping.} From left to right: source color image, baseline-warped result, AniUnFlow-warped result, and the target frame.}
+\label{fig:color_propagation}
+\end{figure*}
+
+For color propagation, we simply set $S_t = I_t$ in Eq.~\ref{eq:generic_propagation}. This produces a direct test of whether the predicted flow is useful for carrying painted appearance from one drawing to the next. Figure~\ref{fig:color_propagation} shows that the baseline introduces heavier ghosting around the eye, teeth, and jawline, whereas AniUnFlow produces a visibly cleaner warped image. This matters for anime-oriented applications such as color carry-over, paint assistance, and temporally coherent editing, where even a small geometric mistake becomes obvious once the image itself is warped.
+
+\subsection{Contour Propagation}
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=\textwidth]{img/downstream_tasks/cami_02_05_A_0306_contour_propagation.png}
+\caption{\textbf{Contour propagation.} The source line structure is warped to the next frame using the predicted flow and then overlaid on the target image for visual inspection.}
+\label{fig:contour_propagation}
+\end{figure*}
+
+Contour propagation is particularly important in animation because line placement is often more perceptually sensitive than texture alignment. Here $S_t$ is a contour image extracted from the AnimeRun annotations and propagated using Eq.~\ref{eq:generic_propagation}. Figure~\ref{fig:contour_propagation} indicates that AniUnFlow keeps the eye ring, mouth edges, and thin background lines better aligned with the target drawing. The baseline, by contrast, exhibits clearer contour doubling and positional drift. This is strong evidence that the benefit of AniUnFlow is not merely lower scalar error, but better preservation of line-based structure that actually matters in hand-drawn animation.
+
+\subsection{Stylization Consistency}
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=\textwidth]{img/downstream_tasks/cami_02_05_A_0306_stylization_consistency.png}
+\caption{\textbf{Temporal stylization consistency under flow propagation.} A simple stylized rendering of the source frame is propagated to the next frame and compared with the stylized target view.}
+\label{fig:stylization_consistency}
+\end{figure*}
+
+Finally, we test a simple stylization-consistency setting. We first construct a stylized source rendering $T(I_t)$ through a lightweight posterization-and-edge pipeline, and then propagate it with the estimated flow:
+\begin{equation}
+\hat{I}^{\text{style}}_{t+1}(\mathbf{x}) = T(I_t)\bigl(\mathbf{x} - \mathbf{F}_{t \rightarrow t+1}(\mathbf{x})\bigr).
+\label{eq:stylization_propagation}
+\end{equation}
+The purpose is not to benchmark stylization quality itself, but to test whether the flow is stable enough to support temporal effect transfer. In Figure~\ref{fig:stylization_consistency}, AniUnFlow preserves the stylized line arrangement and silhouette more faithfully, while the baseline output contains more obvious instability around the head and facial edges. This suggests that AniUnFlow is better suited to downstream pipelines where flow is used to stabilize frame-to-frame appearance transformations.
+
+Taken together, Figures~\ref{fig:mask_propagation}--\ref{fig:stylization_consistency} show that AniUnFlow is useful not only as a flow estimator, but also as a reusable motion prior for practical animation operations. In production-oriented tools, flow is rarely the final product. It is more often an internal mechanism that drives mask transfer, color carry-over, contour stabilization, and temporally consistent effects. The downstream evaluation therefore strengthens the main argument of this thesis: a structure-aware motion field is valuable precisely because it remains reliable when reused by other tasks.
 
 \section{Latest Large-Motion Extension}
 
@@ -130,4 +409,4 @@ Visibility-aware compositing & Helps reconcile overlapping motion hypotheses nea
 \end{tabular}
 \end{table}
 
-The extension is important for the thesis because it shows that AniUnFlow is not a dead-end architecture. The same structure-first principles that motivated the main framework can naturally expand toward larger search spaces and harder motion regimes. At the same time, keeping this material as a short extension rather than the main story makes the thesis cleaner: the reader first understands the core framework, then sees how it can be extended when large displacement becomes the dominant failure mode.
+Figure~\ref{fig:large_motion_extension} shows the qualitative effect of widening the search space on a difficult clip, while Table~\ref{tab:latest_extension} summarizes the three mechanisms that distinguish this branch from the main AniUnFlow framework. The extension is important for the thesis because it shows that AniUnFlow is not a dead-end architecture. The same structure-first principles that motivated the main framework can naturally expand toward larger search spaces and harder motion regimes. At the same time, keeping this material as a short extension rather than the main story makes the thesis cleaner: the reader first understands the core framework, then sees how it can be extended when large displacement becomes the dominant failure mode.

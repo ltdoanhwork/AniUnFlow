@@ -1,0 +1,56 @@
+{
+  "workspace": "workspaces/v5_4_sam_propagation_memory",
+  "event_file": "workspaces/v5_4_sam_propagation_memory/tb_v5_4_sam_propagation_memory/events.out.tfevents.1774173384.ldtan.610108.0",
+  "schedule": [
+    {
+      "enable_layered_order": false,
+      "enable_long_gap": false,
+      "enable_occ_aware": false,
+      "enable_residual_branch": false,
+      "enable_segment_cycle": false,
+      "end_epoch": 8,
+      "start_epoch": 1,
+      "stride_max": 1,
+      "stride_min": 1
+    },
+    {
+      "enable_layered_order": false,
+      "enable_long_gap": false,
+      "enable_occ_aware": true,
+      "enable_residual_branch": true,
+      "enable_segment_cycle": false,
+      "end_epoch": 16,
+      "start_epoch": 9,
+      "stride_max": 1,
+      "stride_min": 1
+    },
+    {
+      "enable_layered_order": false,
+      "enable_long_gap": false,
+      "enable_occ_aware": true,
+      "enable_residual_branch": true,
+      "enable_segment_cycle": false,
+      "end_epoch": 32,
+      "start_epoch": 17,
+      "stride_max": 2,
+      "stride_min": 1
+    },
+    {
+      "enable_layered_order": false,
+      "enable_long_gap": true,
+      "enable_occ_aware": true,
+      "enable_residual_branch": true,
+      "enable_segment_cycle": true,
+      "end_epoch": 48,
+      "start_epoch": 33,
+      "stride_max": 2,
+      "stride_min": 1
+    }
+  ],
+  "summary": {
+    "initial_epoch_loss": 0.43037572503089905,
+    "final_epoch_loss": 0.3000337481498718,
+    "initial_step_loss": 0.30590111017227173,
+    "final_step_loss": 0.176961287856102
+  }
+}
